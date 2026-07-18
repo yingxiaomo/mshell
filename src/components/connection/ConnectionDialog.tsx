@@ -1,8 +1,14 @@
 import { useEffect, useState } from "react";
-import type { AuthMethod, Connection } from "../../types/protocol";
+import type {
+  AuthMethod,
+  Connection,
+  TunnelConfig,
+  TunnelType,
+} from "../../types/protocol";
 import { useConnectionsStore } from "../../stores/connections";
 
 type AuthType = "password" | "privateKey" | "agent" | "certificate";
+type TunnelKindType = "local" | "remote" | "dynamic";
 
 export interface ConnectionDialogProps {
   open: boolean;
@@ -28,25 +34,138 @@ function emptyAuth(type: AuthType): AuthMethod {
   }
 }
 
+type DraftTunnel = {
+  id: string;
+  name: string;
+  kindType: TunnelKindType;
+  autoStart: boolean;
+  localHost: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+};
+
+function draftFromConfig(t: TunnelConfig): DraftTunnel {
+  const base = {
+    id: t.id,
+    name: t.name,
+    autoStart: t.autoStart,
+    localHost: "127.0.0.1",
+    localPort: 18080,
+    remoteHost: "127.0.0.1",
+    remotePort: 80,
+  };
+  if (t.kind.type === "local") {
+    return {
+      ...base,
+      kindType: "local",
+      localHost: t.kind.localHost,
+      localPort: t.kind.localPort,
+      remoteHost: t.kind.remoteHost,
+      remotePort: t.kind.remotePort,
+    };
+  }
+  if (t.kind.type === "remote") {
+    return {
+      ...base,
+      kindType: "remote",
+      localHost: t.kind.localHost,
+      localPort: t.kind.localPort,
+      remoteHost: t.kind.remoteHost,
+      remotePort: t.kind.remotePort,
+    };
+  }
+  return {
+    ...base,
+    kindType: "dynamic",
+    localHost: t.kind.localHost,
+    localPort: t.kind.localPort,
+  };
+}
+
+function draftToConfig(d: DraftTunnel): TunnelConfig {
+  let kind: TunnelType;
+  if (d.kindType === "local") {
+    kind = {
+      type: "local",
+      localHost: d.localHost || "127.0.0.1",
+      localPort: Number(d.localPort) || 0,
+      remoteHost: d.remoteHost || "127.0.0.1",
+      remotePort: Number(d.remotePort) || 0,
+    };
+  } else if (d.kindType === "remote") {
+    kind = {
+      type: "remote",
+      remoteHost: d.remoteHost || "0.0.0.0",
+      remotePort: Number(d.remotePort) || 0,
+      localHost: d.localHost || "127.0.0.1",
+      localPort: Number(d.localPort) || 0,
+    };
+  } else {
+    kind = {
+      type: "dynamic",
+      localHost: d.localHost || "127.0.0.1",
+      localPort: Number(d.localPort) || 0,
+    };
+  }
+  return {
+    id: d.id,
+    name: d.name.trim() || kindLabel(kind),
+    kind,
+    autoStart: d.autoStart,
+  };
+}
+
+function kindLabel(kind: TunnelType): string {
+  switch (kind.type) {
+    case "local":
+      return `本地 ${kind.localPort}→${kind.remoteHost}:${kind.remotePort}`;
+    case "remote":
+      return `远程 ${kind.remotePort}→${kind.localHost}:${kind.localPort}`;
+    case "dynamic":
+      return `动态 SOCKS ${kind.localPort}`;
+  }
+}
+
+function emptyDraft(): DraftTunnel {
+  return {
+    id: crypto.randomUUID(),
+    name: "",
+    kindType: "local",
+    autoStart: true,
+    localHost: "127.0.0.1",
+    localPort: 18080,
+    remoteHost: "127.0.0.1",
+    remotePort: 80,
+  };
+}
+
 export function ConnectionDialog({
   open,
   initial,
   onClose,
 }: ConnectionDialogProps) {
   const save = useConnectionsStore((s) => s.save);
+  const allConnections = useConnectionsStore((s) => s.items);
 
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
   const [port, setPort] = useState(22);
   const [username, setUsername] = useState("");
   const [group, setGroup] = useState("");
+  const [jumpHost, setJumpHost] = useState<string>("");
   const [authType, setAuthType] = useState<AuthType>("password");
   const [password, setPassword] = useState("");
   const [keyPath, setKeyPath] = useState("");
   const [certPath, setCertPath] = useState("");
   const [passphrase, setPassphrase] = useState("");
+  const [tunnels, setTunnels] = useState<DraftTunnel[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const jumpCandidates = allConnections.filter(
+    (c) => c.id !== initial?.id && c.source?.type !== "sshConfig",
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -56,9 +175,11 @@ export function ConnectionDialog({
       setPort(initial.port);
       setUsername(initial.username);
       setGroup(initial.group ?? "");
+      setJumpHost(initial.jumpHost ?? "");
       setAuthType(initial.auth.type);
       setPassword("");
       setPassphrase("");
+      setTunnels((initial.tunnels ?? []).map(draftFromConfig));
       if (initial.auth.type === "privateKey") {
         setKeyPath(initial.auth.path);
         setCertPath("");
@@ -75,17 +196,25 @@ export function ConnectionDialog({
       setPort(22);
       setUsername("");
       setGroup("");
+      setJumpHost("");
       setAuthType("password");
       setPassword("");
       setKeyPath("");
       setCertPath("");
       setPassphrase("");
+      setTunnels([]);
     }
     setError(null);
     setSaving(false);
   }, [open, initial]);
 
   if (!open) return null;
+
+  function updateTunnel(id: string, patch: Partial<DraftTunnel>) {
+    setTunnels((list) =>
+      list.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    );
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -131,8 +260,8 @@ export function ConnectionDialog({
       auth,
       group: group.trim() || null,
       tags: initial?.tags ?? [],
-      jumpHost: initial?.jumpHost ?? null,
-      tunnels: initial?.tunnels ?? [],
+      jumpHost: jumpHost || null,
+      tunnels: tunnels.map(draftToConfig),
       source: initial?.source ?? { type: "manual" },
       lastConnected: initial?.lastConnected ?? null,
       notes: initial?.notes ?? null,
@@ -157,7 +286,7 @@ export function ConnectionDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl"
+        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl"
       >
         <h2 className="mb-4 text-lg font-semibold text-zinc-100">
           {initial ? "编辑连接" : "新建连接"}
@@ -207,6 +336,20 @@ export function ConnectionDialog({
               value={group}
               onChange={(e) => setGroup(e.target.value)}
             />
+          </Field>
+          <Field label="跳板机 ProxyJump（可选）">
+            <select
+              className={inputClass}
+              value={jumpHost}
+              onChange={(e) => setJumpHost(e.target.value)}
+            >
+              <option value="">无</option>
+              {jumpCandidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.username}@{c.host}:{c.port})
+                </option>
+              ))}
+            </select>
           </Field>
           <Field label="认证方式">
             <select
@@ -288,6 +431,155 @@ export function ConnectionDialog({
               </Field>
             </>
           )}
+
+          <div className="border-t border-zinc-800 pt-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium text-zinc-300">
+                端口转发 / 隧道
+              </span>
+              <button
+                type="button"
+                onClick={() => setTunnels((t) => [...t, emptyDraft()])}
+                className="rounded-md px-2 py-1 text-xs text-sky-400 hover:bg-zinc-800"
+              >
+                + 添加
+              </button>
+            </div>
+            {tunnels.length === 0 ? (
+              <p className="text-[11px] text-zinc-500">
+                可选。本地 / 动态为完整支持；远程为尽力支持。勾选自动启动将在会话打开时启动。
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {tunnels.map((t) => (
+                  <li
+                    key={t.id}
+                    className="rounded-md border border-zinc-800 bg-zinc-950/60 p-2"
+                  >
+                    <div className="mb-2 flex items-center gap-2">
+                      <input
+                        className={`${inputClass} flex-1`}
+                        placeholder="名称"
+                        value={t.name}
+                        onChange={(e) =>
+                          updateTunnel(t.id, { name: e.target.value })
+                        }
+                      />
+                      <select
+                        className={inputClass}
+                        value={t.kindType}
+                        onChange={(e) =>
+                          updateTunnel(t.id, {
+                            kindType: e.target.value as TunnelKindType,
+                          })
+                        }
+                      >
+                        <option value="local">本地</option>
+                        <option value="dynamic">动态 SOCKS5</option>
+                        <option value="remote">远程</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setTunnels((list) =>
+                            list.filter((x) => x.id !== t.id),
+                          )
+                        }
+                        className="shrink-0 rounded px-1.5 py-1 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-red-400"
+                        aria-label="删除隧道"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(t.kindType === "local" ||
+                        t.kindType === "dynamic" ||
+                        t.kindType === "remote") && (
+                        <>
+                          <Field label="本地主机">
+                            <input
+                              className={inputClass}
+                              value={t.localHost}
+                              onChange={(e) =>
+                                updateTunnel(t.id, {
+                                  localHost: e.target.value,
+                                })
+                              }
+                            />
+                          </Field>
+                          <Field label="本地端口">
+                            <input
+                              className={inputClass}
+                              type="number"
+                              min={1}
+                              max={65535}
+                              value={t.localPort}
+                              onChange={(e) =>
+                                updateTunnel(t.id, {
+                                  localPort: Number(e.target.value),
+                                })
+                              }
+                            />
+                          </Field>
+                        </>
+                      )}
+                      {(t.kindType === "local" || t.kindType === "remote") && (
+                        <>
+                          <Field
+                            label={
+                              t.kindType === "remote"
+                                ? "远程绑定主机"
+                                : "远程目标主机"
+                            }
+                          >
+                            <input
+                              className={inputClass}
+                              value={t.remoteHost}
+                              onChange={(e) =>
+                                updateTunnel(t.id, {
+                                  remoteHost: e.target.value,
+                                })
+                              }
+                            />
+                          </Field>
+                          <Field
+                            label={
+                              t.kindType === "remote"
+                                ? "远程绑定端口"
+                                : "远程目标端口"
+                            }
+                          >
+                            <input
+                              className={inputClass}
+                              type="number"
+                              min={1}
+                              max={65535}
+                              value={t.remotePort}
+                              onChange={(e) =>
+                                updateTunnel(t.id, {
+                                  remotePort: Number(e.target.value),
+                                })
+                              }
+                            />
+                          </Field>
+                        </>
+                      )}
+                    </div>
+                    <label className="mt-2 flex items-center gap-2 text-[11px] text-zinc-400">
+                      <input
+                        type="checkbox"
+                        checked={t.autoStart}
+                        onChange={(e) =>
+                          updateTunnel(t.id, { autoStart: e.target.checked })
+                        }
+                      />
+                      会话打开时自动启动
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
 
         {error && (

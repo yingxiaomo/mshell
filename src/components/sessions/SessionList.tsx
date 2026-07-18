@@ -1,18 +1,49 @@
-import { useEffect, useState } from "react";
-import type { Connection } from "../../types/protocol";
+import { useEffect, useMemo, useState } from "react";
+import type { Connection, HostKeyPrompt } from "../../types/protocol";
+import {
+  clientErrorMessage,
+  parseClientError,
+} from "../../types/protocol";
 import { useConnectionsStore } from "../../stores/connections";
+import { useSessionsStore } from "../../stores/sessions";
+import { useSettingsStore } from "../../stores/settings";
+import { useUiStore } from "../../stores/ui";
+import { sessionOpen } from "../../lib/tauri";
 import { ConnectionDialog } from "../connection/ConnectionDialog";
+import { HostKeyDialog } from "../connection/HostKeyDialog";
 import { SessionListItem } from "./SessionListItem";
 
 export function SessionList() {
   const items = useConnectionsStore((s) => s.items);
+  const imported = useConnectionsStore((s) => s.imported);
   const loading = useConnectionsStore((s) => s.loading);
   const error = useConnectionsStore((s) => s.error);
   const load = useConnectionsStore((s) => s.load);
   const remove = useConnectionsStore((s) => s.remove);
+  const allFn = useConnectionsStore((s) => s.all);
+  const duplicateAsLocal = useConnectionsStore((s) => s.duplicateAsLocal);
+
+  const merged = useMemo(
+    () => allFn(),
+    // Recompute when local or imported lists change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items, imported, allFn],
+  );
+
+  const addTab = useSessionsStore((s) => s.addTab);
+  const setOpening = useSessionsStore((s) => s.setOpening);
+  const setOpenError = useSessionsStore((s) => s.setOpenError);
+  const opening = useSessionsStore((s) => s.opening);
+  const switchToFilesOnOpen = useSettingsStore(
+    (s) => s.settings.switchToFilesOnOpen,
+  );
+  const setActiveView = useUiStore((s) => s.setActiveView);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Connection | null>(null);
+  const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPrompt | null>(
+    null,
+  );
 
   useEffect(() => {
     void load();
@@ -24,6 +55,7 @@ export function SessionList() {
   }
 
   function openEdit(c: Connection) {
+    if (c.source?.type === "sshConfig") return;
     setEditing(c);
     setDialogOpen(true);
   }
@@ -34,6 +66,50 @@ export function SessionList() {
       await remove(id);
     } catch (e) {
       window.alert(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function handleDuplicate(c: Connection) {
+    try {
+      await duplicateAsLocal(c);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function handleOpen(connection: Connection) {
+    if (connection.source?.type === "sshConfig") {
+      window.alert("导入的 ssh config 主机为只读，请先「复制为本地」再连接。");
+      return;
+    }
+    if (opening) return;
+    setOpening(true);
+    setOpenError(null);
+    try {
+      const result = await sessionOpen(connection.id);
+      addTab(result);
+      if (switchToFilesOnOpen) {
+        setActiveView("files");
+      }
+    } catch (e) {
+      const cerr = parseClientError(e);
+      if (
+        cerr.kind === "hostKeyChanged" ||
+        cerr.kind === "hostKeyUnknown"
+      ) {
+        setHostKeyPrompt({
+          kind: cerr.kind,
+          fingerprint: cerr.fingerprint,
+          host: cerr.host,
+          connectionId: connection.id,
+          connectionName: connection.name,
+        });
+        setOpenError(null);
+      } else {
+        setOpenError(clientErrorMessage(cerr));
+      }
+    } finally {
+      setOpening(false);
     }
   }
 
@@ -53,7 +129,7 @@ export function SessionList() {
       </div>
 
       <div className="flex-1 overflow-auto p-3">
-        {loading && items.length === 0 && (
+        {loading && merged.length === 0 && (
           <p className="text-sm text-zinc-500">加载中…</p>
         )}
         {error && (
@@ -61,18 +137,24 @@ export function SessionList() {
             {error}
           </p>
         )}
-        {!loading && items.length === 0 && !error && (
+        {!loading && merged.length === 0 && !error && (
           <p className="text-sm text-zinc-500">
-            暂无连接。点击「新建」添加 SSH 主机。
+            暂无连接。点击「新建」添加 SSH 主机，或将主机写入 ~/.ssh/config。
           </p>
         )}
         <ul className="space-y-2">
-          {items.map((c) => (
+          {merged.map((c) => (
             <SessionListItem
-              key={c.id}
+              key={
+                c.source?.type === "sshConfig"
+                  ? `sshcfg:${c.source.path}:${c.source.hostAlias}`
+                  : c.id
+              }
               connection={c}
               onEdit={openEdit}
               onDelete={handleDelete}
+              onOpen={handleOpen}
+              onDuplicateAsLocal={handleDuplicate}
             />
           ))}
         </ul>
@@ -85,6 +167,10 @@ export function SessionList() {
           setDialogOpen(false);
           setEditing(null);
         }}
+      />
+      <HostKeyDialog
+        prompt={hostKeyPrompt}
+        onClose={() => setHostKeyPrompt(null)}
       />
     </div>
   );

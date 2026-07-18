@@ -20,6 +20,10 @@ tauri-plugin-store = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+base64 = "0.22"
+flume = "0.11"
 protocol = { path = "../protocol" }
 store = { path = "../store" }
 ssh-core = { path = "../ssh-core" }
+tauri-plugin-dialog = "2"
+chrono = { workspace = true }

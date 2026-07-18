@@ -1,19 +1,204 @@
 use std::sync::Mutex;
+use std::thread;
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use protocol::events;
+use protocol::{ClientError, SessionOpenResult, TerminalOutputEvent};
+use ssh_core::{CoreError, KnownHostsPolicy, SessionEvent, SessionManager};
 use store::{ConnectionStore, SettingsStore};
+use tauri::{AppHandle, Emitter};
+use uuid::Uuid;
+
+/// Map core/session errors to a frontend-parseable string.
+/// Host-key variants serialize as [`ClientError`] JSON; others stay plain messages.
+pub fn map_core_err(err: CoreError) -> String {
+    let client = match err {
+        CoreError::HostKeyChanged { fingerprint, host } => {
+            ClientError::HostKeyChanged { fingerprint, host }
+        }
+        CoreError::HostKeyUnknown { fingerprint, host } => {
+            ClientError::HostKeyUnknown { fingerprint, host }
+        }
+        CoreError::Auth(message) => ClientError::Auth { message },
+        CoreError::SessionNotFound(id) => ClientError::NotFound {
+            message: id.to_string(),
+        },
+        other => ClientError::Message {
+            message: other.to_string(),
+        },
+    };
+    serde_json::to_string(&client).unwrap_or_else(|e| e.to_string())
+}
+
+pub fn map_err_str(err: impl ToString) -> String {
+    let message = err.to_string();
+    // Already JSON ClientError from a nested map_core_err? pass through if parseable.
+    if message.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&message) {
+            if v.get("kind").is_some() {
+                return message;
+            }
+        }
+    }
+    serde_json::to_string(&ClientError::Message { message })
+        .unwrap_or_else(|e| e.to_string())
+}
 
 pub struct AppState {
     pub connections: Mutex<ConnectionStore>,
-    /// Loaded in Task 5 for init parity; settings commands arrive in a later task.
-    #[allow(dead_code)]
     pub settings: Mutex<SettingsStore>,
+    pub sessions: Mutex<SessionManager>,
 }
 
 impl AppState {
-    pub fn new(connections: ConnectionStore, settings: SettingsStore) -> Self {
+    pub fn build(
+        connections: ConnectionStore,
+        settings: SettingsStore,
+        sessions: SessionManager,
+    ) -> Self {
         Self {
             connections: Mutex::new(connections),
             settings: Mutex::new(settings),
+            sessions: Mutex::new(sessions),
         }
     }
+}
+
+/// Spawn a background bridge that maps [`SessionEvent`] → Tauri events.
+pub fn install_event_bridge(app: AppHandle, event_rx: flume::Receiver<SessionEvent>) {
+    thread::Builder::new()
+        .name("session-event-bridge".into())
+        .spawn(move || {
+            while let Ok(ev) = event_rx.recv() {
+                match ev {
+                    SessionEvent::Output {
+                        session_id,
+                        channel_id,
+                        data,
+                    } => {
+                        let payload = TerminalOutputEvent {
+                            session_id,
+                            channel_id,
+                            data_b64: B64.encode(&data),
+                        };
+                        let _ = app.emit(events::TERMINAL_OUTPUT, payload);
+                    }
+                    SessionEvent::Disconnected { session_id, reason } => {
+                        #[derive(serde::Serialize, Clone)]
+                        #[serde(rename_all = "camelCase")]
+                        struct Disc {
+                            session_id: Uuid,
+                            reason: String,
+                        }
+                        let _ = app.emit(
+                            events::SESSION_DISCONNECTED,
+                            Disc {
+                                session_id,
+                                reason,
+                            },
+                        );
+                    }
+                    SessionEvent::TransferProgress {
+                        transfer_id,
+                        bytes,
+                        total,
+                        status,
+                        error,
+                    } => {
+                        let payload = protocol::TransferProgressEvent {
+                            transfer_id,
+                            bytes,
+                            total,
+                            status,
+                            error,
+                        };
+                        let _ = app.emit(events::TRANSFER_PROGRESS, payload);
+                    }
+                    SessionEvent::TunnelStatus(status) => {
+                        let _ = app.emit(events::TUNNEL_STATUS, status);
+                    }
+                }
+            }
+        })
+        .expect("spawn session event bridge");
+}
+
+/// Look up a connection, connect + open shell, return open result.
+///
+/// Uses [`KnownHostsPolicy::Strict`] so first-seen and changed keys surface as
+/// structured [`ClientError`] for the host-key trust modal.
+pub fn open_session(
+    state: &AppState,
+    connection_id: Uuid,
+    cols: u32,
+    rows: u32,
+) -> Result<SessionOpenResult, String> {
+    let (conn, jump_chain) = {
+        let store = state.connections.lock().map_err(map_err_str)?;
+        let conn = store.get(connection_id).ok_or_else(|| {
+            map_err_str(format!("connection not found: {connection_id}"))
+        })?;
+        let chain = ssh_core::resolve_jump_chain(&conn, |id| store.get(id))
+            .map_err(map_core_err)?;
+        (conn, chain)
+    };
+
+    let name = conn.name.clone();
+    let mut sessions = state.sessions.lock().map_err(map_err_str)?;
+    let session_id = sessions
+        .connect_with_chain(&conn, KnownHostsPolicy::Strict, Some(jump_chain))
+        .map_err(map_core_err)?;
+
+    let channel_id = match sessions.open_shell(session_id, cols, rows) {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = sessions.disconnect(session_id);
+            return Err(map_core_err(e));
+        }
+    };
+
+    // Open SFTP alongside PTY so the Files sidebar can list immediately.
+    if let Err(e) = sessions.open_sftp(session_id) {
+        let _ = sessions.disconnect(session_id);
+        return Err(map_core_err(e));
+    }
+
+    // Auto-start connection-configured tunnels (failures are non-fatal per-tunnel).
+    for t in conn.tunnels.iter().filter(|t| t.auto_start) {
+        if let Err(e) = sessions.tunnel_start(session_id, t.clone()) {
+            eprintln!(
+                "auto-start tunnel '{}' ({}) failed: {e}",
+                t.name, t.id
+            );
+        }
+    }
+
+    Ok(SessionOpenResult {
+        session_id,
+        connection_id,
+        terminal_channel_id: channel_id,
+        name,
+    })
+}
+
+/// Best-effort disconnect of `session_id`, then open a new session for the same connection.
+pub fn reconnect_session(
+    state: &AppState,
+    session_id: Uuid,
+    cols: u32,
+    rows: u32,
+) -> Result<SessionOpenResult, String> {
+    let connection_id = {
+        let sessions = state.sessions.lock().map_err(map_err_str)?;
+        sessions.connection_id(session_id).ok_or_else(|| {
+            map_err_str(format!("session not found: {session_id}"))
+        })?
+    };
+
+    {
+        let mut sessions = state.sessions.lock().map_err(map_err_str)?;
+        let _ = sessions.disconnect(session_id);
+    }
+
+    open_session(state, connection_id, cols, rows)
 }

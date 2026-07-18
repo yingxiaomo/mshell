@@ -150,6 +150,21 @@ pub struct TransferProgressEvent {
     pub error: Option<String>,
 }
 
+/// Runtime tunnel status (command replies + `tunnel-status` events).
+///
+/// `state`: `"starting"` | `"running"` | `"stopped"` | `"error"`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelStatus {
+    pub tunnel_id: Uuid,
+    pub session_id: Uuid,
+    pub name: String,
+    pub kind: TunnelType,
+    pub auto_start: bool,
+    pub state: String,
+    pub error: Option<String>,
+}
+
 pub mod events {
     pub const TERMINAL_OUTPUT: &str = "terminal-output";
     pub const TRANSFER_PROGRESS: &str = "transfer-progress";
@@ -168,6 +183,8 @@ pub enum ClientError {
     NotFound { message: String },
     #[error("host key changed: {fingerprint}")]
     HostKeyChanged { fingerprint: String, host: String },
+    #[error("unknown host key: {fingerprint}")]
+    HostKeyUnknown { fingerprint: String, host: String },
 }
 
 #[cfg(test)]
@@ -286,6 +303,20 @@ mod tests {
             _ => panic!("wrong variant"),
         }
         assert!(s.contains("\"kind\":\"hostKeyChanged\"") || s.contains("fingerprint"));
+
+        let unk = ClientError::HostKeyUnknown {
+            fingerprint: "SHA256:xyz".into(),
+            host: "h:22".into(),
+        };
+        let su = serde_json::to_string(&unk).unwrap();
+        let back_u: ClientError = serde_json::from_str(&su).unwrap();
+        match back_u {
+            ClientError::HostKeyUnknown { fingerprint, host } => {
+                assert_eq!(fingerprint, "SHA256:xyz");
+                assert_eq!(host, "h:22");
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 
     #[test]

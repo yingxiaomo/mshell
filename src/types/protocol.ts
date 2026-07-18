@@ -123,6 +123,19 @@ export interface TransferProgressEvent {
   error?: string | null;
 }
 
+/** Runtime tunnel status from tunnel_list / tunnel-status events. */
+export type TunnelRunState = "starting" | "running" | "stopped" | "error" | string;
+
+export interface TunnelStatus {
+  tunnelId: Uuid;
+  sessionId: Uuid;
+  name: string;
+  kind: TunnelType;
+  autoStart: boolean;
+  state: TunnelRunState;
+  error?: string | null;
+}
+
 export const EventName = {
   TERMINAL_OUTPUT: "terminal-output",
   TRANSFER_PROGRESS: "transfer-progress",
@@ -136,4 +149,48 @@ export type ClientError =
   | { kind: "message"; message: string }
   | { kind: "auth"; message: string }
   | { kind: "notFound"; message: string }
-  | { kind: "hostKeyChanged"; fingerprint: string; host: string };
+  | { kind: "hostKeyChanged"; fingerprint: string; host: string }
+  | { kind: "hostKeyUnknown"; fingerprint: string; host: string };
+
+export type HostKeyPromptKind = "hostKeyChanged" | "hostKeyUnknown";
+
+export interface HostKeyPrompt {
+  kind: HostKeyPromptKind;
+  fingerprint: string;
+  /** `host:port` known_hosts key. */
+  host: string;
+  /** Connection to retry after trust. */
+  connectionId: string;
+  connectionName?: string;
+}
+
+/** Parse Tauri command errors that may be JSON ClientError or plain text. */
+export function parseClientError(err: unknown): ClientError {
+  const raw = err instanceof Error ? err.message : String(err);
+  // Tauri may wrap the payload; try to find a JSON object.
+  const candidates = [raw];
+  const brace = raw.indexOf("{");
+  if (brace > 0) candidates.push(raw.slice(brace));
+  for (const c of candidates) {
+    try {
+      const v = JSON.parse(c) as ClientError;
+      if (v && typeof v === "object" && "kind" in v) return v;
+    } catch {
+      /* continue */
+    }
+  }
+  return { kind: "message", message: raw };
+}
+
+export function clientErrorMessage(err: ClientError): string {
+  switch (err.kind) {
+    case "message":
+    case "auth":
+    case "notFound":
+      return err.message;
+    case "hostKeyChanged":
+      return `主机密钥已变更 (${err.host})`;
+    case "hostKeyUnknown":
+      return `未知主机密钥 (${err.host})`;
+  }
+}
