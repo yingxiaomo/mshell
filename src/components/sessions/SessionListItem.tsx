@@ -48,11 +48,6 @@ export function SessionListItem({
           )}
         </div>
         <div className="truncate text-xs text-zinc-500">{subtitle}</div>
-        {connection.group && (
-          <div className="mt-0.5 text-[11px] text-zinc-600">
-            {connection.group}
-          </div>
-        )}
       </div>
       <div className="flex shrink-0 gap-1 opacity-80 group-hover:opacity-100">
         {imported ? (

@@ -776,6 +776,10 @@ fn establish_session_on_tcp(
     Ok(sess)
 }
 
+struct ShellChannelPair {
+    channel: ssh2::Channel,
+}
+
 fn run_cmd_loop(
     session_id: Uuid,
     mut sess: Session,
@@ -783,7 +787,7 @@ fn run_cmd_loop(
     event_tx: flume::Sender<SessionEvent>,
     transfers: Arc<TransferQueue>,
 ) -> String {
-    let mut channels: HashMap<Uuid, ssh2::Channel> = HashMap::new();
+    let mut channels: HashMap<Uuid, ShellChannelPair> = HashMap::new();
     let mut sftp: Option<ssh2::Sftp> = None;
     let mut local_tunnels: HashMap<Uuid, LocalTunnelHandle> = HashMap::new();
     let mut remote_tunnels: HashMap<Uuid, RemoteTunnelHandle> = HashMap::new();
@@ -845,10 +849,10 @@ fn run_cmd_loop(
         poll_remote_tunnels(&mut sess, &mut remote_tunnels);
 
         let mut closed: Vec<Uuid> = Vec::new();
-        for (channel_id, channel) in channels.iter_mut() {
+        for (channel_id, pair) in channels.iter_mut() {
             // stdout
             loop {
-                match terminal::try_read(channel, &mut read_buf) {
+                match terminal::try_read(&mut pair.channel, &mut read_buf) {
                     Ok(Some(0)) => {
                         closed.push(*channel_id);
                         break;
@@ -870,7 +874,7 @@ fn run_cmd_loop(
 
             // stderr (merged into same terminal stream)
             loop {
-                match terminal::try_read_stderr(channel, &mut read_buf) {
+                match terminal::try_read_stderr(&mut pair.channel, &mut read_buf) {
                     Ok(Some(0)) | Ok(None) => break,
                     Ok(Some(n)) => {
                         let _ = event_tx.send(SessionEvent::Output {
@@ -883,15 +887,15 @@ fn run_cmd_loop(
                 }
             }
 
-            if channel.eof() {
+            if pair.channel.eof() {
                 closed.push(*channel_id);
             }
         }
 
         for id in closed {
-            if let Some(mut ch) = channels.remove(&id) {
-                let _ = ch.close();
-                let _ = ch.wait_close();
+            if let Some(mut pair) = channels.remove(&id) {
+                let _ = pair.channel.close();
+                let _ = pair.channel.wait_close();
             }
         }
     }
@@ -915,7 +919,7 @@ fn handle_cmd(
     sess: &mut Session,
     session_id: Uuid,
     cmd: SessionCmd,
-    channels: &mut HashMap<Uuid, ssh2::Channel>,
+    channels: &mut HashMap<Uuid, ShellChannelPair>,
     sftp: &mut Option<ssh2::Sftp>,
     local_tunnels: &mut HashMap<Uuid, LocalTunnelHandle>,
     remote_tunnels: &mut HashMap<Uuid, RemoteTunnelHandle>,
@@ -925,13 +929,12 @@ fn handle_cmd(
     match cmd {
         SessionCmd::Shutdown => true,
         SessionCmd::OpenShell { cols, rows, reply } => {
-            // channel_session / request_pty / shell need blocking mode.
             sess.set_blocking(true);
             let result = terminal::open_shell(sess, cols, rows);
             sess.set_blocking(false);
             match result {
                 Ok((channel_id, channel)) => {
-                    channels.insert(channel_id, channel);
+                    channels.insert(channel_id, ShellChannelPair { channel });
                     let _ = reply.send(Ok(channel_id));
                 }
                 Err(e) => {
@@ -941,11 +944,9 @@ fn handle_cmd(
             false
         }
         SessionCmd::Write { channel_id, data } => {
-            if let Some(ch) = channels.get_mut(&channel_id) {
-                // Temporarily block for a reliable write of small keystroke batches.
+            if let Some(pair) = channels.get_mut(&channel_id) {
                 sess.set_blocking(true);
-                if let Err(e) = terminal::write_all(ch, &data) {
-                    // Ignore broken-pipe style errors; channel may be closing.
+                if let Err(e) = terminal::write_all(&mut pair.channel, &data) {
                     if !matches!(
                         e,
                         CoreError::Io(ref io) if io.kind() == ErrorKind::BrokenPipe
@@ -963,9 +964,9 @@ fn handle_cmd(
             cols,
             rows,
         } => {
-            if let Some(ch) = channels.get_mut(&channel_id) {
+            if let Some(pair) = channels.get_mut(&channel_id) {
                 sess.set_blocking(true);
-                let _ = terminal::resize(ch, cols, rows);
+                let _ = terminal::resize(&mut pair.channel, cols, rows);
                 sess.set_blocking(false);
             }
             false

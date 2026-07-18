@@ -125,18 +125,22 @@ pub fn install_event_bridge(app: AppHandle, event_rx: flume::Receiver<SessionEve
 
 /// Look up a connection, connect + open shell, return open result.
 ///
-/// Uses [`KnownHostsPolicy::Strict`] so first-seen and changed keys surface as
-/// structured [`ClientError`] for the host-key trust modal.
-pub fn open_session(
+/// The actual SSH connect/auth runs on a background thread (`tokio::task::spawn_blocking`)
+/// so the command handler does not freeze the UI.
+///
+/// Thick blocking connect path. Call from a background thread if the UI must
+/// stay responsive during TCP+SSH handshake.
+#[allow(dead_code)]
+pub fn open_session_blocking(
     state: &AppState,
     connection_id: Uuid,
     cols: u32,
     rows: u32,
 ) -> Result<SessionOpenResult, String> {
     let (conn, jump_chain) = {
-        let store = state.connections.lock().map_err(map_err_str)?;
+        let store = state.connections.lock().map_err(|e| e.to_string())?;
         let conn = store.get(connection_id).ok_or_else(|| {
-            map_err_str(format!("connection not found: {connection_id}"))
+            format!("connection not found: {connection_id}")
         })?;
         let chain = ssh_core::resolve_jump_chain(&conn, |id| store.get(id))
             .map_err(map_core_err)?;
@@ -144,7 +148,7 @@ pub fn open_session(
     };
 
     let name = conn.name.clone();
-    let mut sessions = state.sessions.lock().map_err(map_err_str)?;
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session_id = sessions
         .connect_with_chain(&conn, KnownHostsPolicy::Strict, Some(jump_chain))
         .map_err(map_core_err)?;
@@ -182,6 +186,7 @@ pub fn open_session(
 }
 
 /// Best-effort disconnect of `session_id`, then open a new session for the same connection.
+#[allow(dead_code)]
 pub fn reconnect_session(
     state: &AppState,
     session_id: Uuid,
@@ -200,5 +205,5 @@ pub fn reconnect_session(
         let _ = sessions.disconnect(session_id);
     }
 
-    open_session(state, connection_id, cols, rows)
+    open_session_blocking(state, connection_id, cols, rows)
 }

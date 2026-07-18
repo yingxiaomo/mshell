@@ -15,6 +15,7 @@ export type TerminalTab = {
   disconnected?: boolean;
   reconnecting?: boolean;
   disconnectReason?: string;
+  synced?: boolean;
 };
 
 type SessionsState = {
@@ -37,6 +38,8 @@ type SessionsState = {
     result?: SessionOpenResult,
   ) => void;
   reconnectTab: (sessionId: string) => Promise<void>;
+  toggleSync: (sessionId: string) => void;
+  getSyncedTargets: (excludeSessionId: string) => TerminalTab[];
 };
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -207,6 +210,20 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
       }));
       throw e;
     }
+  },
+
+  toggleSync: (sessionId) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.sessionId === sessionId ? { ...t, synced: !t.synced } : t,
+      ),
+    }));
+  },
+
+  getSyncedTargets: (excludeSessionId) => {
+    return get().tabs.filter(
+      (t) => t.synced && t.sessionId !== excludeSessionId,
+    );
   },
 }));
 

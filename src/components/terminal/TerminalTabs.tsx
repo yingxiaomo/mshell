@@ -18,6 +18,7 @@ export function TerminalTabs() {
   const opening = useSessionsStore((s) => s.opening);
   const markDisconnected = useSessionsStore((s) => s.markDisconnected);
   const reconnectTab = useSessionsStore((s) => s.reconnectTab);
+  const toggleSync = useSessionsStore((s) => s.toggleSync);
   const terminalFont = useSettingsStore((s) => s.settings.terminalFont);
   const terminalFontSize = useSettingsStore((s) => s.settings.terminalFontSize);
   const autoReconnect = useSettingsStore((s) => s.settings.autoReconnect);
@@ -78,6 +79,25 @@ export function TerminalTabs() {
                   <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle" />
                 ) : null}
                 {tab.name}
+              </button>
+              <button
+                type="button"
+                className={
+                  tab.synced
+                    ? "rounded px-0.5 text-[10px] text-sky-400 hover:text-sky-300"
+                    : "rounded px-0.5 text-[10px] text-zinc-600 hover:text-zinc-400"
+                }
+                title={
+                  tab.synced
+                    ? "同步输入已开启"
+                    : "点击开启同步输入（键盘输入同时发到所有同步标签）"
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleSync(tab.sessionId);
+                }}
+              >
+                ●
               </button>
               <button
                 type="button"

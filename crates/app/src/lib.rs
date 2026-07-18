@@ -5,6 +5,11 @@ use ssh_core::SessionManager;
 use state::AppState;
 use store::{connections_path, settings_path, ConnectionStore, SettingsStore};
 use tauri::Manager;
+#[cfg(desktop)]
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::TrayIconBuilder,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -20,7 +25,44 @@ pub fn run() {
             let (sessions, event_rx) = SessionManager::create();
             app.manage(AppState::build(connections, settings, sessions));
             state::install_event_bridge(app.handle().clone(), event_rx);
+
+            // ── System tray ──────────────────────────────────────
+            #[cfg(desktop)]
+            {
+                let show_item =
+                    MenuItemBuilder::with_id("show", "显示").build(app)?;
+                let quit_item =
+                    MenuItemBuilder::with_id("quit", "退出").build(app)?;
+                let menu = MenuBuilder::new(app)
+                    .item(&show_item)
+                    .item(&quit_item)
+                    .build()?;
+
+                TrayIconBuilder::new()
+                    .icon(app.default_window_icon().unwrap().clone())
+                    .menu(&menu)
+                    .on_menu_event(|app, event| match event.id().as_ref() {
+                        "show" => {
+                            if let Some(win) =
+                                app.get_webview_window("main")
+                            {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .build(app)?;
+            }
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Minimize to tray instead of closing.
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::connection::list_connections,

@@ -44,6 +44,33 @@ export function SessionList() {
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPrompt | null>(
     null,
   );
+  const [collapsedGroups, setCollapsedGroups] = useState<
+    Record<string, boolean>
+  >({});
+
+  // Group connections: ungrouped (no group) + per-group.
+  const grouped = useMemo(() => {
+    const groups = new Map<string, Connection[]>();
+    const ungrouped: Connection[] = [];
+    for (const c of merged) {
+      const g = c.group || "";
+      if (!g) {
+        ungrouped.push(c);
+      } else {
+        let list = groups.get(g);
+        if (!list) {
+          list = [];
+          groups.set(g, list);
+        }
+        list.push(c);
+      }
+    }
+    // Sort groups by key.
+    const sortedGroups = [...groups.entries()].sort((a, b) =>
+      a[0].localeCompare(b[0]),
+    );
+    return { ungrouped, groups: sortedGroups };
+  }, [merged]);
 
   useEffect(() => {
     void load();
@@ -106,7 +133,15 @@ export function SessionList() {
         });
         setOpenError(null);
       } else {
-        setOpenError(clientErrorMessage(cerr));
+        let msg = clientErrorMessage(cerr);
+        if (
+          cerr.kind === "auth" &&
+          /password not found/i.test(msg)
+        ) {
+          msg =
+            "未找到已保存的密码。请编辑该连接并重新填写密码后保存，再双击连接。";
+        }
+        setOpenError(msg);
       }
     } finally {
       setOpening(false);
@@ -143,7 +178,8 @@ export function SessionList() {
           </p>
         )}
         <ul className="space-y-2">
-          {merged.map((c) => (
+          {/* Ungrouped items */}
+          {grouped.ungrouped.map((c) => (
             <SessionListItem
               key={
                 c.source?.type === "sshConfig"
@@ -157,6 +193,52 @@ export function SessionList() {
               onDuplicateAsLocal={handleDuplicate}
             />
           ))}
+          {/* Grouped items */}
+          {grouped.groups.map(([groupName, items]) => {
+            const collapsed = collapsedGroups[groupName] ?? false;
+            return (
+              <li key={groupName}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                  onClick={() =>
+                    setCollapsedGroups((prev) => ({
+                      ...prev,
+                      [groupName]: !(
+                        prev[groupName] ?? false
+                      ),
+                    }))
+                  }
+                >
+                  <span className="text-[10px]">
+                    {collapsed ? "▶" : "▼"}
+                  </span>
+                  {groupName}
+                  <span className="ml-auto text-[10px] text-zinc-600">
+                    {items.length}
+                  </span>
+                </button>
+                {!collapsed && (
+                  <ul className="mt-1 space-y-1.5 pl-2">
+                    {items.map((c) => (
+                      <SessionListItem
+                        key={
+                          c.source?.type === "sshConfig"
+                            ? `sshcfg:${c.source.path}:${c.source.hostAlias}`
+                            : c.id
+                        }
+                        connection={c}
+                        onEdit={openEdit}
+                        onDelete={handleDelete}
+                        onOpen={handleOpen}
+                        onDuplicateAsLocal={handleDuplicate}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </div>
 
