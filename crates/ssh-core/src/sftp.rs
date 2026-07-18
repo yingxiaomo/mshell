@@ -112,6 +112,23 @@ pub fn remote_pathbuf(path: &str) -> PathBuf {
     PathBuf::from(path.replace('\\', "/"))
 }
 
+/// Read a remote file into memory (base64-encoded). Best for small config files.
+pub fn read_text(sftp: &Sftp, remote_path: &str) -> Result<Vec<u8>, CoreError> {
+    let mut remote = sftp.open(Path::new(remote_path))?;
+    let mut buf = Vec::new();
+    remote.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// Write in-memory content to a remote file. Overwrites existing content.
+pub fn write_text(sftp: &Sftp, remote_path: &str, data: &[u8]) -> Result<(), CoreError> {
+    use std::io::Write;
+    let mut remote = sftp.create(Path::new(remote_path))?;
+    remote.write_all(data)?;
+    remote.flush()?;
+    Ok(())
+}
+
 /// Result of a chunked transfer (for status event mapping).
 #[derive(Debug)]
 pub enum TransferOutcome {

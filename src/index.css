@@ -40,3 +40,7 @@ html[data-theme="light"] body {
   background-color: #f4f4f5;
   color: #18181b;
 }
+
+/* Hide scrollbar for split panes */
+.split-pane-container::-webkit-scrollbar { display: none; }
+.split-pane-container { -ms-overflow-style: none; scrollbar-width: none; }

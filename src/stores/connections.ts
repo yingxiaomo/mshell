@@ -3,6 +3,7 @@ import type { Connection } from "../types/protocol";
 import {
   deleteConnection as deleteConnectionCmd,
   duplicateSshConfigConnection,
+  importPuttySessions,
   importSshConfig,
   listConnections,
   saveConnection as saveConnectionCmd,
@@ -29,6 +30,7 @@ interface ConnectionsState {
   ) => Promise<Connection>;
   remove: (id: string) => Promise<void>;
   duplicateAsLocal: (conn: Connection) => Promise<Connection>;
+  importPutty: () => Promise<void>;
 }
 
 export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
@@ -97,5 +99,15 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
     const saved = await duplicateSshConfigConnection(conn);
     set({ items: [...get().items, saved] });
     return saved;
+  },
+
+  importPutty: async () => {
+    const conns = await importPuttySessions();
+    if (conns.length === 0) return;
+    set((s) => {
+      const existing = new Set(s.items.map((c) => c.host));
+      const newItems = conns.filter((c) => !existing.has(c.host));
+      return { items: [...s.items, ...newItems] };
+    });
   },
 }));

@@ -22,6 +22,7 @@ export function SessionList() {
   const remove = useConnectionsStore((s) => s.remove);
   const allFn = useConnectionsStore((s) => s.all);
   const duplicateAsLocal = useConnectionsStore((s) => s.duplicateAsLocal);
+  const importPutty = useConnectionsStore((s) => s.importPutty);
 
   const merged = useMemo(
     () => allFn(),
@@ -160,6 +161,14 @@ export function SessionList() {
           className="rounded-md bg-sky-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-sky-500"
         >
           新建
+        </button>
+        <button
+          type="button"
+          onClick={() => void importPutty()}
+          className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          title="从 PuTTY 导入会话"
+        >
+          PuTTY
         </button>
       </div>
 

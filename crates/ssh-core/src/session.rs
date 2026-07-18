@@ -119,6 +119,17 @@ pub enum SessionCmd {
         cancel: Arc<AtomicBool>,
         reply: flume::Sender<Result<(), CoreError>>,
     },
+    /// Read a remote file into a base64 string (for built-in editor).
+    SftpRead {
+        remote_path: String,
+        reply: flume::Sender<Result<Vec<u8>, CoreError>>,
+    },
+    /// Write binary data to a remote file (for built-in editor).
+    SftpWrite {
+        remote_path: String,
+        data: Vec<u8>,
+        reply: flume::Sender<Result<(), CoreError>>,
+    },
     TunnelStart {
         config: TunnelConfig,
         reply: flume::Sender<Result<(), CoreError>>,
@@ -491,6 +502,24 @@ impl SessionManager {
                 "transfer not found: {transfer_id}"
             )))
         }
+    }
+
+    /// Read a remote file into memory (bytes). For built-in file editor.
+    pub fn sftp_read(&self, session_id: Uuid, remote_path: String) -> Result<Vec<u8>, CoreError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.send(session_id, SessionCmd::SftpRead { remote_path, reply: reply_tx })?;
+        reply_rx
+            .recv()
+            .map_err(|_| CoreError::Other("sftp_read reply channel closed".into()))?
+    }
+
+    /// Write bytes to a remote file. For built-in file editor.
+    pub fn sftp_write(&self, session_id: Uuid, remote_path: String, data: Vec<u8>) -> Result<(), CoreError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.send(session_id, SessionCmd::SftpWrite { remote_path, data, reply: reply_tx })?;
+        reply_rx
+            .recv()
+            .map_err(|_| CoreError::Other("sftp_write reply channel closed".into()))?
     }
 
     /// Start a port forward on a live session.
@@ -1086,6 +1115,30 @@ fn handle_cmd(
             emit_transfer_result(event_tx, transfer_id, result);
             transfers.finish(transfer_id);
             let _ = reply.send(Ok(()));
+            false
+        }
+        SessionCmd::SftpRead { remote_path, reply } => {
+            sess.set_blocking(true);
+            let result = (|| {
+                let s = ensure_sftp(sess, sftp)?;
+                sftp_ops::read_text(s, &remote_path)
+            })();
+            sess.set_blocking(false);
+            let _ = reply.send(result);
+            false
+        }
+        SessionCmd::SftpWrite {
+            remote_path,
+            data,
+            reply,
+        } => {
+            sess.set_blocking(true);
+            let result = (|| {
+                let s = ensure_sftp(sess, sftp)?;
+                sftp_ops::write_text(s, &remote_path, &data)
+            })();
+            sess.set_blocking(false);
+            let _ = reply.send(result);
             false
         }
         SessionCmd::TunnelStart { config, reply } => {
