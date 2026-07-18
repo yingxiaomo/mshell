@@ -1,0 +1,4 @@
+# Prefer MSVC link.exe over a global lld-link override when building this workspace.
+# Requires a Developer Command Prompt / vcvars (or link.exe on PATH).
+[target.x86_64-pc-windows-msvc]
+linker = "link.exe"

@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+target/
+src-tauri/target/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Tauri / local
+*.local
+
+# Lock files kept: package-lock.json is committed
+# Cargo.lock is committed for binary workspace
+
+# Test / coverage
+coverage/
+*.lcov
+
+# Misc
+*.tsbuildinfo
+.turbo

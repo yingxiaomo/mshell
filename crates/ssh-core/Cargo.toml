@@ -1,0 +1,11 @@
+[package]
+name = "ssh-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocol = { path = "../protocol" }
+keyring = "3"
+zeroize = { version = "1", features = ["derive"] }
+thiserror = { workspace = true }
+uuid = { workspace = true }
