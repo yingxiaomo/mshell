@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+  background-color: #09090b; /* zinc-950 — avoid pure white flash/blank */
+  color: #f4f4f5;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Theme hooks (shell is dark-first; light is a soft override). */
+html.theme-dark,
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html.theme-light,
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
+html.theme-light body,
+html[data-theme="light"] body {
+  background-color: #f4f4f5;
+  color: #18181b;
+}

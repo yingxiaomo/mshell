@@ -1,0 +1,22 @@
+[package]
+name = "ssh-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocol = { path = "../protocol" }
+# keyring 3.x has no default features; without windows-native it uses an in-memory mock.
+keyring = { version = "3", features = ["windows-native"] }
+zeroize = { version = "1", features = ["derive"] }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ssh2 = "0.9"
+flume = "0.11"
+dirs = "6"
+sha2 = "0.10"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"

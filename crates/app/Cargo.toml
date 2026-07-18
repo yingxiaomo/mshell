@@ -1,0 +1,29 @@
+[package]
+name = "momoshell"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "momoshell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "momoshell"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-store = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+base64 = "0.22"
+flume = "0.11"
+protocol = { path = "../protocol" }
+store = { path = "../store" }
+ssh-core = { path = "../ssh-core" }
+tauri-plugin-dialog = "2"
+chrono = { workspace = true }
