@@ -3,6 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import { clsx } from "clsx";
 import type { SideViewId } from "../../types/protocol";
 import { useUiStore } from "../../stores/ui";
+import { ShortcutHelp } from "../ui/ShortcutHelp";
 
 const ITEMS: { id: SideViewId; label: string; Icon: LucideIcon }[] = [
   { id: "sessions", label: "连接", Icon: Server },
@@ -47,6 +48,9 @@ export function ActivityBar() {
           </button>
         );
       })}
+      <div className="mt-auto flex flex-col items-center gap-1 pb-1">
+        <ShortcutHelp />
+      </div>
     </nav>
   );
 }

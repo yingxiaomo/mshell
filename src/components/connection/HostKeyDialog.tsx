@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { HostKeyPrompt } from "../../types/protocol";
 import { hostKeyTrust, sessionOpen } from "../../lib/tauri";
+import { estimateTerminalGeometry } from "../../lib/terminalGeometry";
 import { useSessionsStore } from "../../stores/sessions";
 import { useSettingsStore } from "../../stores/settings";
 import { useUiStore } from "../../stores/ui";
@@ -38,7 +39,8 @@ export function HostKeyDialog({ prompt, onClose }: HostKeyDialogProps) {
     setOpenError(null);
     try {
       await hostKeyTrust(prompt.host, prompt.fingerprint);
-      const result = await sessionOpen(prompt.connectionId);
+      const { cols, rows } = estimateTerminalGeometry();
+      const result = await sessionOpen(prompt.connectionId, cols, rows);
       addTab(result);
       if (switchToFilesOnOpen) {
         setActiveView("files");

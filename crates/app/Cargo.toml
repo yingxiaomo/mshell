@@ -27,3 +27,4 @@ store = { path = "../store" }
 ssh-core = { path = "../ssh-core" }
 tauri-plugin-dialog = "2"
 chrono = { workspace = true }
+winreg = "0.56.0"

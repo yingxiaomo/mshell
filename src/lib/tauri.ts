@@ -38,6 +38,20 @@ export function duplicateSshConfigConnection(conn: Connection) {
   return invoke<Connection>("duplicate_ssh_config_connection", { conn });
 }
 
+/** Import PuTTY sessions from Windows Registry. */
+export function importPuttySessions() {
+  return invoke<Connection[]>("import_putty_sessions");
+}
+
+/** List available COM / serial ports. */
+export function listSerialPorts() {
+  return invoke<string[]>("list_serial_ports");
+}
+
+export function sessionOpenLocal() {
+  return invoke<SessionOpenResult>("session_open_local", {});
+}
+
 export function sessionOpen(
   connectionId: string,
   cols?: number,
@@ -137,6 +151,14 @@ export function sftpDownload(
 
 export function transferCancel(transferId: string) {
   return invoke<void>("transfer_cancel", { transferId });
+}
+
+export function sftpReadText(sessionId: string, remotePath: string) {
+  return invoke<string>("sftp_read_text", { sessionId, remotePath });
+}
+
+export function sftpWriteText(sessionId: string, remotePath: string, contentB64: string) {
+  return invoke<void>("sftp_write_text", { sessionId, remotePath, contentB64 });
 }
 
 export function tunnelStart(sessionId: string, config: TunnelConfig) {

@@ -2,6 +2,8 @@ use protocol::{AuthMethod, Connection, ConnectionSource};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
+use winreg::enums::*;
+use winreg::RegKey;
 
 use crate::state::{map_err_str, AppState};
 
@@ -62,6 +64,68 @@ pub fn duplicate_ssh_config_connection(
         .upsert(conn.clone())
         .map_err(|e| e.to_string())?;
     Ok(conn)
+}
+
+/// Import PuTTY sessions from Windows Registry.
+/// Reads `HKCU\Software\SimonTatham\PuTTY\Sessions` and returns Connections.
+#[tauri::command]
+pub fn import_putty_sessions() -> Result<Vec<Connection>, String> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let sessions_key = match hkcu.open_subkey_with_flags(
+        r"Software\SimonTatham\PuTTY\Sessions",
+        KEY_READ,
+    ) {
+        Ok(k) => k,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut out = Vec::new();
+    for name in sessions_key.enum_keys() {
+        let name = name.map_err(|e| e.to_string())?;
+        let key = sessions_key
+            .open_subkey_with_flags(&name, KEY_READ)
+            .map_err(|e| e.to_string())?;
+
+        let host: String = key.get_value("HostName").unwrap_or_default();
+        if host.is_empty() {
+            continue;
+        }
+        let port: u32 = key.get_value("PortNumber").unwrap_or(22);
+        let username: String = key.get_value("UserName").unwrap_or_default();
+        let key_path: String = key.get_value("PublicKeyFile").unwrap_or_default();
+
+        let auth = if key_path.is_empty() {
+            AuthMethod::Password {
+                credential_id: String::new(),
+            }
+        } else {
+            AuthMethod::PrivateKey {
+                path: key_path,
+                passphrase_credential_id: None,
+            }
+        };
+
+        let display_name = name.replace("%20", " ").replace("%26", "&");
+
+        out.push(Connection {
+            id: Uuid::new_v4(),
+            name: display_name,
+            host,
+            port: port as u16,
+            username,
+            auth,
+            group: Some("PuTTY".into()),
+            tags: vec!["putty".into()],
+            jump_host: None,
+            tunnels: vec![],
+            protocol: Default::default(),
+            source: ConnectionSource::Manual,
+            last_connected: None,
+            notes: Some("从 PuTTY 导入".into()),
+            serial_config: None,
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]

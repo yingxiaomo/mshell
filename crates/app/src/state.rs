@@ -3,46 +3,14 @@ use std::thread;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use protocol::events;
-use protocol::{ClientError, SessionOpenResult, TerminalOutputEvent};
-use ssh_core::{CoreError, KnownHostsPolicy, SessionEvent, SessionManager};
+use protocol::{SessionOpenResult, TerminalOutputEvent};
+use ssh_core::{KnownHostsPolicy, SessionEvent, SessionManager};
 use store::{ConnectionStore, SettingsStore};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
-/// Map core/session errors to a frontend-parseable string.
-/// Host-key variants serialize as [`ClientError`] JSON; others stay plain messages.
-pub fn map_core_err(err: CoreError) -> String {
-    let client = match err {
-        CoreError::HostKeyChanged { fingerprint, host } => {
-            ClientError::HostKeyChanged { fingerprint, host }
-        }
-        CoreError::HostKeyUnknown { fingerprint, host } => {
-            ClientError::HostKeyUnknown { fingerprint, host }
-        }
-        CoreError::Auth(message) => ClientError::Auth { message },
-        CoreError::SessionNotFound(id) => ClientError::NotFound {
-            message: id.to_string(),
-        },
-        other => ClientError::Message {
-            message: other.to_string(),
-        },
-    };
-    serde_json::to_string(&client).unwrap_or_else(|e| e.to_string())
-}
-
-pub fn map_err_str(err: impl ToString) -> String {
-    let message = err.to_string();
-    // Already JSON ClientError from a nested map_core_err? pass through if parseable.
-    if message.starts_with('{') {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&message) {
-            if v.get("kind").is_some() {
-                return message;
-            }
-        }
-    }
-    serde_json::to_string(&ClientError::Message { message })
-        .unwrap_or_else(|e| e.to_string())
-}
+// Error mapping lives in error_map so it can be unit-tested without Tauri runtime.
+pub use crate::error_map::{map_core_err, map_err_str};
 
 pub struct AppState {
     pub connections: Mutex<ConnectionStore>,
@@ -100,6 +68,7 @@ pub fn install_event_bridge(app: AppHandle, event_rx: flume::Receiver<SessionEve
                     }
                     SessionEvent::TransferProgress {
                         transfer_id,
+                        session_id,
                         bytes,
                         total,
                         status,
@@ -107,6 +76,7 @@ pub fn install_event_bridge(app: AppHandle, event_rx: flume::Receiver<SessionEve
                     } => {
                         let payload = protocol::TransferProgressEvent {
                             transfer_id,
+                            session_id: Some(session_id),
                             bytes,
                             total,
                             status,

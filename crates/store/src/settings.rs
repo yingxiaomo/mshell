@@ -13,7 +13,21 @@ impl SettingsStore {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let settings = if path.exists() {
             let data = std::fs::read_to_string(path)?;
-            serde_json::from_str(&data)?
+            // Empty / corrupt settings must not take down app startup — fall back to defaults.
+            if data.trim().is_empty() {
+                AppSettings::default()
+            } else {
+                match serde_json::from_str(&data) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!(
+                            "settings store: failed to parse {}: {e}; using defaults",
+                            path.display()
+                        );
+                        AppSettings::default()
+                    }
+                }
+            }
         } else {
             AppSettings::default()
         };
@@ -55,6 +69,20 @@ mod tests {
         assert_eq!(s.theme, "dark");
         assert_eq!(s.terminal_font_size, 14);
         assert!(s.auto_reconnect);
+    }
+
+    #[test]
+    fn load_default_when_empty_or_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.json");
+        std::fs::write(&empty, "").unwrap();
+        let store = SettingsStore::open(&empty).unwrap();
+        assert_eq!(store.load().theme, "dark");
+
+        let bad = dir.path().join("bad.json");
+        std::fs::write(&bad, "{").unwrap();
+        let store = SettingsStore::open(&bad).unwrap();
+        assert_eq!(store.load().theme, "dark");
     }
 
     #[test]

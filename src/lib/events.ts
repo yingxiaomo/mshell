@@ -6,84 +6,96 @@ import {
   type TunnelStatus,
 } from "../types/protocol";
 
-export type SessionDisconnectedEvent = {
-  sessionId: string;
-  reason: string;
-};
+export type SessionDisconnectedEvent = { sessionId: string; reason: string };
 
-/** No-op unlisten when Tauri IPC is unavailable (browser-only preview). */
 const noopUnlisten: UnlistenFn = () => {};
 
-async function safeListen<T>(
+function safeListen<T>(
   event: string,
   handler: (payload: T) => void,
 ): Promise<UnlistenFn> {
   try {
-    return await listen<T>(event, (e) => {
-      handler(e.payload);
-    });
+    return listen<T>(event, (e) => handler(e.payload));
   } catch {
-    return noopUnlisten;
+    return Promise.resolve(noopUnlisten);
   }
 }
 
-// ── Global early-bird buffer ─────────────────────────────────────────
-// Subscribe at app init so output emitted before TerminalView mounts is
-// not lost. TerminalView drains the buffer for its session on mount.
-const earlyBuffer: Map<string, Uint8Array[]> = new Map();
-let globalUnlisten: UnlistenFn | null = null;
-let globalForward: ((ev: TerminalOutputEvent) => void) | null = null;
+// ── Global output buffer (HMR-safe via globalThis) ───────────────────
+// Single Tauri listener stores terminal output for ALL sessions.
+// TerminalView polls consumeTerminalOutput(); StrictMode remount must not
+// permanently drop early MOTD/prompt, so we keep a replayable history.
 
-/** Subscribe the global listener (call once from main.tsx / App.tsx). */
+const BUF_KEY = "__momoshell_term_buf__";
+type BufBag = {
+  pending: Map<string, Uint8Array[]>;
+  history: Map<string, Uint8Array[]>;
+  inited: boolean;
+};
+type GlobalBag = typeof globalThis & { [BUF_KEY]?: BufBag };
+const g = globalThis as GlobalBag;
+const buf: BufBag =
+  g[BUF_KEY] ??
+  (g[BUF_KEY] = {
+    pending: new Map(),
+    history: new Map(),
+    inited: false,
+  });
+
+const MAX_HISTORY_CHUNKS = 800;
+
+function pushHistory(sessionId: string, chunk: Uint8Array) {
+  let h = buf.history.get(sessionId);
+  if (!h) {
+    h = [];
+    buf.history.set(sessionId, h);
+  }
+  h.push(chunk);
+  if (h.length > MAX_HISTORY_CHUNKS) {
+    h.splice(0, h.length - MAX_HISTORY_CHUNKS);
+  }
+}
+
 export async function initEarlyTerminalBuffer(): Promise<void> {
-  if (globalUnlisten) return;
-  globalUnlisten = await safeListen<TerminalOutputEvent>(
-    EventName.TERMINAL_OUTPUT,
-    (ev) => {
-      // Forward to live handler if set (faster than buffer → drain).
-      if (globalForward) {
-        globalForward(ev);
-        return;
-      }
-      // Buffer by sessionId.
-      let list = earlyBuffer.get(ev.sessionId);
-      if (!list) {
-        list = [];
-        earlyBuffer.set(ev.sessionId, list);
-      }
-      list.push(decodeTerminalOutputBytes(ev.dataB64));
-    },
-  );
-}
-
-/** Once TerminalView has its listener attached, drain the buffer for that session. */
-export function drainTerminalBuffer(
-  sessionId: string,
-  liveHandler: (bytes: Uint8Array) => void,
-): void {
-  const buffered = earlyBuffer.get(sessionId);
-  if (buffered && buffered.length > 0) {
-    for (const bytes of buffered) {
-      liveHandler(bytes);
+  if (buf.inited) return;
+  buf.inited = true;
+  await safeListen<TerminalOutputEvent>(EventName.TERMINAL_OUTPUT, (ev) => {
+    const chunk = decodeTerminalOutputBytes(ev.dataB64);
+    let list = buf.pending.get(ev.sessionId);
+    if (!list) {
+      list = [];
+      buf.pending.set(ev.sessionId, list);
     }
-    earlyBuffer.delete(sessionId);
-  }
+    list.push(chunk);
+    pushHistory(ev.sessionId, chunk);
+  });
 }
 
-/** Attach the live forward after TerminalView subscribes. */
-export function setLiveTerminalForward(
-  fn: ((ev: TerminalOutputEvent) => void) | null,
-): void {
-  globalForward = fn;
+/**
+ * Take pending (not-yet-consumed) bytes for a session.
+ * History is retained so a remount can replay via {@link replayTerminalHistory}.
+ */
+export function consumeTerminalOutput(sessionId: string): Uint8Array[] {
+  const list = buf.pending.get(sessionId);
+  if (!list || list.length === 0) return [];
+  buf.pending.set(sessionId, []);
+  return list;
 }
 
-// ── Individual event helpers (used by TerminalView for live stream) ──
-
-export function onTerminalOutput(
-  handler: (ev: TerminalOutputEvent) => void,
-): Promise<UnlistenFn> {
-  return safeListen(EventName.TERMINAL_OUTPUT, handler);
+/** Full history for remount / StrictMode recovery (oldest → newest). */
+export function replayTerminalHistory(sessionId: string): Uint8Array[] {
+  const h = buf.history.get(sessionId);
+  if (!h || h.length === 0) return [];
+  return h.slice();
 }
+
+/** Drop buffers when a session tab is closed. */
+export function clearTerminalBuffers(sessionId: string): void {
+  buf.pending.delete(sessionId);
+  buf.history.delete(sessionId);
+}
+
+// ── Other event helpers ────────────────────────────────────────────
 
 export function onSessionDisconnected(
   handler: (ev: SessionDisconnectedEvent) => void,
@@ -103,30 +115,18 @@ export function onTunnelStatus(
   return safeListen(EventName.TUNNEL_STATUS, handler);
 }
 
-// ── Base64 helpers ───────────────────────────────────────────────────
+// ── Base64 helpers ──────────────────────────────────────────────────
 
-/** Encode a JS string as UTF-8 base64 for `terminal_write`. */
 export function encodeTerminalInput(data: string): string {
   const bytes = new TextEncoder().encode(data);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]!);
-  }
-  return btoa(binary);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+  return btoa(bin);
 }
 
-/** Decode base64 to a binary string (older xterm write path). */
-export function decodeTerminalOutput(dataB64: string): string {
-  const binary = atob(dataB64);
-  return binary;
-}
-
-/** Decode base64 to Uint8Array (preferred write path). */
 export function decodeTerminalOutputBytes(dataB64: string): Uint8Array {
-  const binary = atob(dataB64);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    out[i] = binary.charCodeAt(i);
-  }
+  const bin = atob(dataB64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }

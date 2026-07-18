@@ -5,6 +5,16 @@ export type Uuid = string;
 /** Sidebar activity views (frontend shell). */
 export type SideViewId = "sessions" | "files" | "tunnels" | "settings";
 
+export type ConnectionProtocol = "ssh" | "telnet" | "local" | "serial";
+
+export interface SerialConfig {
+  portName: string;
+  baudRate: number;
+  dataBits: number;
+  stopBits: string;
+  parity: string;
+}
+
 export type AuthMethod =
   | { type: "password"; credentialId: string }
   | {
@@ -57,6 +67,7 @@ export interface Connection {
   name: string;
   host: string;
   port: number;
+  protocol?: ConnectionProtocol;
   username: string;
   auth: AuthMethod;
   group?: string | null;
@@ -66,31 +77,54 @@ export interface Connection {
   source: ConnectionSource;
   lastConnected?: string | null; // ISO-8601 DateTime
   notes?: string | null;
+  serialConfig?: SerialConfig | null;
 }
 
 export interface AppSettings {
   theme: string;
+  codeTheme: string;
   terminalFont: string;
   terminalFontSize: number;
+  /** xterm scrollback lines (history buffer). */
+  terminalScrollback: number;
+  /** Copy selection to clipboard automatically. */
+  copyOnSelect: boolean;
   rememberPasswordDefault: boolean;
   autoReconnect: boolean;
   idleSessionMinutes: number;
   switchToFilesOnOpen: boolean;
   sshConfigPath?: string | null;
   defaultDownloadDir?: string | null;
+  /** Side panel width in px. */
+  sidebarWidth: number;
+  /** Editor pane flex share (0.2–0.65). */
+  editorSplitRatio: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   theme: "dark",
+  codeTheme: "one-dark",
   terminalFont: "Cascadia Code, Consolas, monospace",
   terminalFontSize: 14,
+  terminalScrollback: 5000,
+  copyOnSelect: false,
   rememberPasswordDefault: true,
   autoReconnect: true,
   idleSessionMinutes: 30,
   switchToFilesOnOpen: true,
   sshConfigPath: null,
   defaultDownloadDir: null,
+  sidebarWidth: 260,
+  editorSplitRatio: 0.55,
 };
+
+export interface SerialConfig {
+  portName: string;
+  baudRate: number;
+  dataBits: number;
+  stopBits: string;
+  parity: string;
+}
 
 export interface SessionOpenResult {
   sessionId: Uuid;
@@ -117,6 +151,7 @@ export type TransferStatus = "running" | "done" | "failed" | "cancelled";
 
 export interface TransferProgressEvent {
   transferId: Uuid;
+  sessionId?: Uuid | null;
   bytes: number;
   total?: number | null;
   status: TransferStatus | string;

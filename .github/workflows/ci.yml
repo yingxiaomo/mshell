@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master, "feature/**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run test
+      - run: npm run build
+
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install MSVC tools note
+        run: echo "Windows runner includes MSVC for libssh2/serialport"
+      - name: cargo test workspace libs
+        run: cargo test -p protocol -p store -p ssh-core -p momoshell --lib --tests
+      - name: cargo check app
+        run: cargo check -p momoshell

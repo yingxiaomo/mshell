@@ -60,11 +60,16 @@ Artifacts typically appear under:
 
 - Connection CRUD + optional `~/.ssh/config` import
 - Multi-tab PTY terminal (xterm.js) with reconnect
-- SFTP file sidebar + transfer progress
+- SFTP file sidebar + remote text editor (syntax themes)
 - Local / dynamic tunnels (and remote tunnel config)
 - ProxyJump multi-hop
 - Host key trust prompt (strict known_hosts; modal on unknown / changed)
 - Export / import connections JSON (secrets stay in Windows Credential Manager)
+- App chrome dark/light + separate code-highlight themes
+
+### Roadmap (V1.1+)
+
+See **[docs/superpowers/plans/2026-07-19-v1.1-deep-features.md](docs/superpowers/plans/2026-07-19-v1.1-deep-features.md)** for the deep-feature plan (multi-file editor, SFTP context menus, command palette, etc.).
 
 ### Host keys
 

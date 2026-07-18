@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use base64::Engine;
 use protocol::RemoteEntry;
 use tauri::State;
 use uuid::Uuid;
@@ -113,5 +114,40 @@ pub fn transfer_cancel(state: State<'_, AppState>, transfer_id: Uuid) -> Result<
         .lock()
         .map_err(|e| e.to_string())?
         .transfer_cancel(transfer_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Read a remote file into memory (base64-encoded). For the built-in editor.
+#[tauri::command]
+pub fn sftp_read_text(
+    state: State<'_, AppState>,
+    session_id: Uuid,
+    remote_path: String,
+) -> Result<String, String> {
+    let bytes = state
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .sftp_read(session_id, remote_path)
+        .map_err(|e| e.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+/// Write base64-decoded content to a remote file. For the built-in editor.
+#[tauri::command]
+pub fn sftp_write_text(
+    state: State<'_, AppState>,
+    session_id: Uuid,
+    remote_path: String,
+    content_b64: String,
+) -> Result<(), String> {
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(&content_b64)
+        .map_err(|e| e.to_string())?;
+    state
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .sftp_write(session_id, remote_path, data)
         .map_err(|e| e.to_string())
 }
