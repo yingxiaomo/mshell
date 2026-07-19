@@ -87,6 +87,7 @@ pub enum TunnelType {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub theme: String,
+    pub code_theme: String,
     pub terminal_font: String,
     pub terminal_font_size: u16,
     pub remember_password_default: bool,
@@ -101,6 +102,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: "dark".into(),
+            code_theme: "one-dark".into(),
             terminal_font: "Cascadia Code, Consolas, monospace".into(),
             terminal_font_size: 14,
             remember_password_default: true,

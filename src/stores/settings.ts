@@ -4,14 +4,14 @@ import {
   getSettings,
   saveSettings as saveSettingsCmd,
 } from "../lib/tauri";
-import {
-  DEFAULT_APP_SETTINGS,
-  type AppSettings,
-} from "../types/protocol";
+import { DEFAULT_APP_SETTINGS, type AppSettings } from "../types/protocol";
+import { themeByKey } from "../lib/themes";
 
-function applyTheme(theme: string) {
+function applyTheme(key: string) {
   const root = document.documentElement;
-  if (theme === "light") {
+  const t = themeByKey(key);
+  const mode = t.chrome ?? "dark";
+  if (mode === "light") {
     root.classList.add("theme-light");
     root.classList.remove("theme-dark");
     root.dataset.theme = "light";

@@ -6,11 +6,7 @@ import {
 } from "../../lib/tauri";
 import { useConnectionsStore } from "../../stores/connections";
 import { useSettingsStore } from "../../stores/settings";
-
-const THEME_OPTIONS = [
-  { value: "dark", label: "深色" },
-  { value: "light", label: "浅色" },
-] as const;
+import { THEMES } from "../../lib/themes";
 
 const FONT_PRESETS = [
   "Cascadia Code, Consolas, monospace",
@@ -221,19 +217,34 @@ export function SettingsView() {
 
         <Section title="外观">
           <div>
-            <FieldLabel htmlFor="theme">主题</FieldLabel>
+            <FieldLabel htmlFor="theme">应用外观</FieldLabel>
             <select
               id="theme"
               className={inputClass()}
               value={draft.theme}
               onChange={(e) => update("theme", e.target.value)}
             >
-              {THEME_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
+              <option value="dark">深色</option>
+              <option value="light">浅色</option>
+            </select>
+          </div>
+          <div>
+            <FieldLabel htmlFor="codeTheme">代码块配色</FieldLabel>
+            <select
+              id="codeTheme"
+              className={inputClass()}
+              value={draft.codeTheme}
+              onChange={(e) => update("codeTheme", e.target.value)}
+            >
+              {THEMES.filter((t) => t.chrome !== "light").map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
                 </option>
               ))}
             </select>
+            <p className="mt-1 text-[11px] text-zinc-600">
+              控制终端背景色、编辑器语法高亮配色。
+            </p>
           </div>
           <div>
             <FieldLabel htmlFor="terminalFont">终端字体</FieldLabel>

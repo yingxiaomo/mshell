@@ -44,3 +44,30 @@ html[data-theme="light"] body {
 /* Hide scrollbar for split panes */
 .split-pane-container::-webkit-scrollbar { display: none; }
 .split-pane-container { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ── Custom dark scrollbar ───────────────────────────── */
+
+/* Thin, dark track + subtle thumb for Webkit (Edge / Chrome) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #27272a;   /* zinc-800 */
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;   /* zinc-700 */
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #27272a transparent;
+}

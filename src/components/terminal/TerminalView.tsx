@@ -8,6 +8,8 @@ import { consumeTerminalOutput } from "../../lib/events";
 import { terminalWrite, terminalResize } from "../../lib/tauri";
 import { encodeTerminalInput } from "../../lib/events";
 import { useSessionsStore } from "../../stores/sessions";
+import { useSettingsStore } from "../../stores/settings";
+import { themeByKey } from "../../lib/themes";
 import type { TerminalTab } from "../../stores/sessions";
 
 export type TerminalViewProps = {
@@ -31,9 +33,9 @@ export function TerminalView({
     const el = elRef.current;
     if (!el) return;
 
-    const term = new Terminal({ convertEol: true, cursorBlink: true, fontFamily, fontSize,
-      theme: { background: "#09090b", foreground: "#e4e4e7", cursor: "#e4e4e7", selectionBackground: "#3f3f46" },
-    });
+    const themeKey = useSettingsStore.getState().settings.codeTheme;
+    const theme = themeByKey(themeKey).terminal;
+    const term = new Terminal({ convertEol: true, cursorBlink: true, fontFamily, fontSize, theme });
     const fit = new FitAddon();
     const searchAddon = new SearchAddon();
     term.loadAddon(fit);

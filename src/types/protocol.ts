@@ -70,6 +70,7 @@ export interface Connection {
 
 export interface AppSettings {
   theme: string;
+  codeTheme: string;
   terminalFont: string;
   terminalFontSize: number;
   rememberPasswordDefault: boolean;
@@ -82,6 +83,7 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   theme: "dark",
+  codeTheme: "one-dark",
   terminalFont: "Cascadia Code, Consolas, monospace",
   terminalFontSize: 14,
   rememberPasswordDefault: true,

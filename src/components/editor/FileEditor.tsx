@@ -5,6 +5,16 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
 import { sftpReadText, sftpWriteText } from "../../lib/tauri";
+import { useSettingsStore } from "../../stores/settings";
+import { themeByKey } from "../../lib/themes";
+
+function codemirrorExtensions(themeKey: string) {
+  const base = [basicSetup, keymap.of([indentWithTab])];
+  // Light themes: no dark extension so CodeMirror defaults to browser colors
+  const t = themeByKey(themeKey);
+  if (t.chrome !== "light") base.push(oneDark);
+  return base;
+}
 
 export type FileEditorProps = {
   sessionId: string;
@@ -42,17 +52,14 @@ export function FileEditor({
   useEffect(() => {
     setLoading(true);
     setError(null);
+    const themeKey = useSettingsStore.getState().settings.codeTheme;
     void sftpReadText(sessionId, remotePath).then(
       (b64) => {
         if (!editorRef.current) return;
         const doc = b64Decode(b64);
         const state = EditorState.create({
           doc,
-          extensions: [
-            basicSetup,
-            oneDark,
-            keymap.of([indentWithTab]),
-          ],
+          extensions: codemirrorExtensions(themeKey),
         });
         const view = new EditorView({ state, parent: editorRef.current });
         viewRef.current = view;
@@ -64,7 +71,23 @@ export function FileEditor({
       },
     );
 
+    // Live theme reactivity: recreate view without re-fetching file.
+    const unsub = useSettingsStore.subscribe((s, prev) => {
+      if (s.settings.codeTheme === prev.settings.codeTheme) return;
+      if (!viewRef.current) return;
+      const doc = viewRef.current.state.doc.toString();
+      viewRef.current.destroy();
+      const state = EditorState.create({
+        doc,
+        extensions: codemirrorExtensions(s.settings.theme),
+      });
+      const el = editorRef.current;
+      if (!el) return;
+      viewRef.current = new EditorView({ state, parent: el });
+    });
+
     return () => {
+      unsub();
       viewRef.current?.destroy();
       viewRef.current = null;
     };
