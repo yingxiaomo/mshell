@@ -22,7 +22,11 @@ interface ConnectionsState {
   error: string | null;
   /** Merged list: local first, then imported (skip alias already present as local). */
   all: () => Connection[];
+  /** Local connections with lastConnected, newest first (max n). */
+  recents: (n?: number) => Connection[];
   load: () => Promise<void>;
+  /** Soft reload without clearing UI (e.g. after session open stamps lastConnected). */
+  reloadQuiet: () => Promise<void>;
   save: (
     conn: Connection,
     password?: string,
@@ -33,7 +37,14 @@ interface ConnectionsState {
   importPutty: () => Promise<void>;
 }
 
-export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
+const CONNECTIONS_KEY = "__momoshell_connections_store_v1__";
+type GlobalBag = typeof globalThis & {
+  [CONNECTIONS_KEY]?: ReturnType<typeof createConnectionsStore>;
+};
+const g = globalThis as GlobalBag;
+
+function createConnectionsStore() {
+  return create<ConnectionsState>((set, get) => ({
   items: [],
   imported: [],
   loading: false,
@@ -48,7 +59,6 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
           c.source.type === "sshConfig" ? c.source.hostAlias : c.name,
         ),
     );
-    // Also de-dupe by name against manual entries that share the host alias name.
     const localNames = new Set(items.map((c) => c.name));
     const extra = imported.filter(
       (c) =>
@@ -58,6 +68,19 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
         ),
     );
     return [...items, ...extra];
+  },
+
+  recents: (n = 5) => {
+    return get()
+      .items
+      .filter((c) => !!c.lastConnected)
+      .slice()
+      .sort((a, b) => {
+        const ta = a.lastConnected ? Date.parse(a.lastConnected) : 0;
+        const tb = b.lastConnected ? Date.parse(b.lastConnected) : 0;
+        return tb - ta;
+      })
+      .slice(0, n);
   },
 
   load: async () => {
@@ -73,6 +96,15 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
         loading: false,
         error: e instanceof Error ? e.message : String(e),
       });
+    }
+  },
+
+  reloadQuiet: async () => {
+    try {
+      const items = await listConnections();
+      set({ items });
+    } catch {
+      /* ignore soft reload errors */
     }
   },
 
@@ -110,4 +142,8 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
       return { items: [...s.items, ...newItems] };
     });
   },
-}));
+  }));
+}
+
+export const useConnectionsStore: ReturnType<typeof createConnectionsStore> =
+  g[CONNECTIONS_KEY] ?? (g[CONNECTIONS_KEY] = createConnectionsStore());

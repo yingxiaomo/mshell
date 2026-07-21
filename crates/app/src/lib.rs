@@ -1,4 +1,5 @@
 mod commands;
+mod error_map;
 mod state;
 
 use ssh_core::SessionManager;
@@ -73,11 +74,13 @@ pub fn run() {
             commands::connection::export_connections,
             commands::connection::import_connections,
             commands::connection::import_putty_sessions,
+            commands::serial::list_serial_ports,
             commands::host_key::host_key_trust,
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::clear_all_credentials,
             commands::session::session_open,
+            commands::session::session_open_local,
             commands::session::session_close,
             commands::session::session_reconnect,
             commands::terminal::terminal_write,

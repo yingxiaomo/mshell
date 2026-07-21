@@ -118,9 +118,11 @@ pub fn import_putty_sessions() -> Result<Vec<Connection>, String> {
             tags: vec!["putty".into()],
             jump_host: None,
             tunnels: vec![],
+            protocol: Default::default(),
             source: ConnectionSource::Manual,
             last_connected: None,
             notes: Some("从 PuTTY 导入".into()),
+            serial_config: None,
         });
     }
     Ok(out)

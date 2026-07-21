@@ -349,12 +349,14 @@ pub fn hosts_to_connections(hosts: &[SshConfigHost]) -> Vec<Connection> {
                 tags: vec!["ssh-config".into()],
                 jump_host: None,
                 tunnels: vec![],
+            protocol: Default::default(),
                 source: ConnectionSource::SshConfig {
                     path: path_str,
                     host_alias: alias.clone(),
                 },
                 last_connected: None,
                 notes,
+            serial_config: None,
             });
         }
     }

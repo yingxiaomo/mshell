@@ -57,9 +57,11 @@ mod tests {
             tags: vec![],
             jump_host: jump,
             tunnels: vec![],
+            protocol: Default::default(),
             source: ConnectionSource::Manual,
             last_connected: None,
             notes: None,
+            serial_config: None,
         }
     }
 

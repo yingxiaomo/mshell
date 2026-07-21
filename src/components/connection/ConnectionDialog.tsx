@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import type {
   AuthMethod,
   Connection,
+  ConnectionProtocol,
   TunnelConfig,
   TunnelType,
 } from "../../types/protocol";
 import { useConnectionsStore } from "../../stores/connections";
+import { listSerialPorts } from "../../lib/tauri";
 
 type AuthType = "password" | "privateKey" | "agent" | "certificate";
 type TunnelKindType = "local" | "remote" | "dynamic";
@@ -151,6 +153,7 @@ export function ConnectionDialog({
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
   const [port, setPort] = useState(22);
+  const [protocol, setProtocol] = useState<ConnectionProtocol>("ssh");
   const [username, setUsername] = useState("");
   const [group, setGroup] = useState("");
   const [jumpHost, setJumpHost] = useState<string>("");
@@ -160,6 +163,13 @@ export function ConnectionDialog({
   const [certPath, setCertPath] = useState("");
   const [passphrase, setPassphrase] = useState("");
   const [tunnels, setTunnels] = useState<DraftTunnel[]>([]);
+  const [serialPort, setSerialPort] = useState("COM1");
+  const [serialBaud, setSerialBaud] = useState(9600);
+  const [serialDataBits, setSerialDataBits] = useState(8);
+  const [serialStopBits, setSerialStopBits] = useState("1");
+  const [serialParity, setSerialParity] = useState("none");
+  const [serialPorts, setSerialPorts] = useState<string[]>([]);
+  const [serialPortsLoading, setSerialPortsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -173,6 +183,7 @@ export function ConnectionDialog({
       setName(initial.name);
       setHost(initial.host);
       setPort(initial.port);
+      setProtocol(initial.protocol ?? "ssh");
       setUsername(initial.username);
       setGroup(initial.group ?? "");
       setJumpHost(initial.jumpHost ?? "");
@@ -180,6 +191,11 @@ export function ConnectionDialog({
       setPassword("");
       setPassphrase("");
       setTunnels((initial.tunnels ?? []).map(draftFromConfig));
+      setSerialPort(initial.serialConfig?.portName ?? "COM1");
+      setSerialBaud(initial.serialConfig?.baudRate ?? 9600);
+      setSerialDataBits(initial.serialConfig?.dataBits ?? 8);
+      setSerialStopBits(initial.serialConfig?.stopBits ?? "1");
+      setSerialParity(initial.serialConfig?.parity ?? "none");
       if (initial.auth.type === "privateKey") {
         setKeyPath(initial.auth.path);
         setCertPath("");
@@ -203,10 +219,40 @@ export function ConnectionDialog({
       setCertPath("");
       setPassphrase("");
       setTunnels([]);
+      setSerialPort("COM1");
+      setSerialBaud(9600);
+      setSerialDataBits(8);
+      setSerialStopBits("1");
+      setSerialParity("none");
     }
     setError(null);
     setSaving(false);
   }, [open, initial]);
+
+  // Enumerate COM ports when dialog opens or protocol switches to serial.
+  useEffect(() => {
+    if (!open || protocol !== "serial") return;
+    let cancelled = false;
+    setSerialPortsLoading(true);
+    void listSerialPorts()
+      .then((ports) => {
+        if (cancelled) return;
+        setSerialPorts(ports);
+        if (ports.length > 0 && !ports.includes(serialPort)) {
+          setSerialPort(ports[0]!);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSerialPorts([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSerialPortsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, protocol]);
 
   if (!open) return null;
 
@@ -219,7 +265,23 @@ export function ConnectionDialog({
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!name.trim() || !host.trim() || !username.trim()) {
+    if (!name.trim()) {
+      setError("名称不能为空");
+      return;
+    }
+    if (protocol === "serial") {
+      if (!serialPort.trim()) {
+        setError("请选择串口号");
+        return;
+      }
+    } else if (protocol === "local") {
+      // local terminal only needs a name
+    } else if (protocol === "telnet") {
+      if (!host.trim()) {
+        setError("主机不能为空");
+        return;
+      }
+    } else if (!host.trim() || !username.trim()) {
       setError("名称、主机和用户名不能为空");
       return;
     }
@@ -254,17 +316,25 @@ export function ConnectionDialog({
     const conn: Connection = {
       id: initial?.id ?? crypto.randomUUID(),
       name: name.trim(),
-      host: host.trim(),
-      port: Number(port) || 22,
-      username: username.trim(),
-      auth,
+      host: protocol === "serial" ? serialPort.trim() : protocol === "local" ? "localhost" : host.trim(),
+      port: protocol === "serial" || protocol === "local" ? 0 : Number(port) || (protocol === "telnet" ? 23 : 22),
+      protocol: protocol,
+      username: protocol === "ssh" ? username.trim() : "",
+      auth: protocol === "ssh" ? auth : { type: "password", credentialId: "" },
       group: group.trim() || null,
       tags: initial?.tags ?? [],
-      jumpHost: jumpHost || null,
-      tunnels: tunnels.map(draftToConfig),
+      jumpHost: protocol === "ssh" ? (jumpHost || null) : null,
+      tunnels: protocol === "ssh" ? tunnels.map(draftToConfig) : [],
       source: initial?.source ?? { type: "manual" },
       lastConnected: initial?.lastConnected ?? null,
       notes: initial?.notes ?? null,
+      serialConfig: protocol === "serial" ? {
+        portName: serialPort,
+        baudRate: serialBaud,
+        dataBits: serialDataBits,
+        stopBits: serialStopBits,
+        parity: serialParity,
+      } : (initial?.serialConfig ?? null),
     };
 
     setSaving(true);
@@ -303,6 +373,98 @@ export function ConnectionDialog({
           </Field>
           <div className="grid grid-cols-3 gap-2">
             <div className="col-span-2">
+              <Field label="协议">
+              <select
+                className={inputClass}
+                value={protocol}
+                onChange={(e) => setProtocol(e.target.value as ConnectionProtocol)}
+              >
+                <option value="ssh">SSH</option>
+                <option value="telnet">Telnet</option>
+                <option value="local">本地终端</option>
+                <option value="serial">串口</option>
+              </select>
+              <p className="text-xs text-zinc-600 mt-1">
+                {protocol === "telnet"
+                  ? "Telnet 为明文协议，不含认证、SFTP 与隧道功能。"
+                  : protocol === "local"
+                  ? "启动本地 cmd.exe / PowerShell，无需网络连接。"
+                  : protocol === "serial"
+                  ? "通过 COM 口连接网络设备 console。需配置端口号与波特率。"
+                  : ""}
+              </p>
+            </Field>
+            {protocol === "serial" && (
+              <div className="space-y-3 col-span-3">
+                <Field label="串口号">
+                  <div className="flex gap-2">
+                    <select
+                      className={inputClass}
+                      value={serialPort}
+                      onChange={(e) => setSerialPort(e.target.value)}
+                    >
+                      {serialPorts.length === 0 && (
+                        <option value={serialPort}>{serialPort || "COM1"}</option>
+                      )}
+                      {serialPorts.map((p) => (
+                        <option key={p} value={p}>{p}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-md border border-zinc-700 px-2 text-xs text-zinc-300 hover:bg-zinc-800"
+                      onClick={() => {
+                        setSerialPortsLoading(true);
+                        void listSerialPorts()
+                          .then((ports) => {
+                            setSerialPorts(ports);
+                            if (ports.length && !ports.includes(serialPort)) setSerialPort(ports[0]!);
+                          })
+                          .finally(() => setSerialPortsLoading(false));
+                      }}
+                    >
+                      {serialPortsLoading ? "…" : "刷新"}
+                    </button>
+                  </div>
+                </Field>
+                {serialPorts.length === 0 && (
+                  <Field label="手动串口号">
+                    <input className={inputClass} value={serialPort} onChange={(e) => setSerialPort(e.target.value)} placeholder="COM1" />
+                  </Field>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="波特率">
+                    <select className={inputClass} value={serialBaud} onChange={(e) => setSerialBaud(Number(e.target.value))}>
+                      <option value={9600}>9600</option>
+                      <option value={19200}>19200</option>
+                      <option value={38400}>38400</option>
+                      <option value={57600}>57600</option>
+                      <option value={115200}>115200</option>
+                    </select>
+                  </Field>
+                  <Field label="数据位">
+                    <select className={inputClass} value={serialDataBits} onChange={(e) => setSerialDataBits(Number(e.target.value))}>
+                      <option value={7}>7</option>
+                      <option value={8}>8</option>
+                    </select>
+                  </Field>
+                  <Field label="停止位">
+                    <select className={inputClass} value={serialStopBits} onChange={(e) => setSerialStopBits(e.target.value)}>
+                      <option value="1">1</option>
+                      <option value="2">2</option>
+                    </select>
+                  </Field>
+                  <Field label="校验">
+                    <select className={inputClass} value={serialParity} onChange={(e) => setSerialParity(e.target.value)}>
+                      <option value="none">无</option>
+                      <option value="odd">奇校验</option>
+                      <option value="even">偶校验</option>
+                    </select>
+                  </Field>
+                </div>
+              </div>
+            )}
+            {protocol !== "serial" && protocol !== "local" && (
               <Field label="主机">
                 <input
                   className={inputClass}
@@ -311,7 +473,9 @@ export function ConnectionDialog({
                   placeholder="example.com"
                 />
               </Field>
+            )}
             </div>
+            {protocol !== "serial" && protocol !== "local" && (
             <Field label="端口">
               <input
                 className={inputClass}
@@ -322,8 +486,9 @@ export function ConnectionDialog({
                 onChange={(e) => setPort(Number(e.target.value))}
               />
             </Field>
+            )}
           </div>
-          <Field label="用户名">
+          {protocol !== "telnet" && protocol !== "local" && protocol !== "serial" && (<><Field label="用户名">
             <input
               className={inputClass}
               value={username}
@@ -580,7 +745,8 @@ export function ConnectionDialog({
               </ul>
             )}
           </div>
-        </div>
+          </>)}
+          </div>
 
         {error && (
           <p className="mt-3 text-sm text-red-400" role="alert">

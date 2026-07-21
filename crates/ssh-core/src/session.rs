@@ -20,6 +20,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use protocol::Connection;
+use protocol::ConnectionProtocol;
 use protocol::RemoteEntry;
 use protocol::{TunnelConfig, TunnelStatus, TunnelType};
 use ssh2::Session;
@@ -52,6 +53,7 @@ pub enum SessionEvent {
     /// Upload/download progress (status: running | done | failed | cancelled).
     TransferProgress {
         transfer_id: Uuid,
+        session_id: Uuid,
         bytes: u64,
         total: Option<u64>,
         status: String,
@@ -228,6 +230,142 @@ impl SessionManager {
 
     /// Like [`Self::connect`] but with an explicit ProxyJump hop chain.
     pub fn connect_with_chain(
+        &mut self,
+        conn: &Connection,
+        policy: KnownHostsPolicy,
+        jump_chain: Option<Vec<Connection>>,
+    ) -> Result<Uuid, CoreError> {
+        match conn.protocol {
+            ConnectionProtocol::Telnet => self.connect_telnet(conn),
+            ConnectionProtocol::Local => self.connect_local(conn),
+            ConnectionProtocol::Serial => self.connect_serial(conn),
+            ConnectionProtocol::Ssh => self.connect_ssh(conn, policy, jump_chain),
+        }
+    }
+
+    fn connect_telnet(&mut self, conn: &Connection) -> Result<Uuid, CoreError> {
+        let session_id = Uuid::new_v4();
+        let (cmd_tx, cmd_rx) = flume::unbounded::<SessionCmd>();
+        let (ready_tx, ready_rx) = flume::bounded::<Result<(), CoreError>>(1);
+
+        let host = conn.host.clone();
+        let port = conn.port;
+        let timeout = self.connect_timeout;
+        let connection_id = conn.id;
+        let event_tx = self.event_tx.clone();
+        let transfers = Arc::clone(&self.transfers);
+
+        let thread = thread::Builder::new()
+            .name(format!("telnet-session-{session_id}"))
+            .spawn(move || {
+                telnet_session_worker(session_id, host, port, timeout, ready_tx, cmd_rx, event_tx, transfers);
+            })
+            .map_err(|e| CoreError::Other(format!("spawn telnet thread: {e}")))?;
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => {
+                self.sessions.insert(
+                    session_id,
+                    LiveSessionHandle { connection_id, cmd_tx, thread: Some(thread) },
+                );
+                Ok(session_id)
+            }
+            Ok(Err(e)) => { let _ = thread.join(); Err(e) }
+            Err(_) => { let _ = thread.join(); Err(CoreError::Other("telnet worker exited before ready".into())) }
+        }
+    }
+
+    
+
+fn connect_local(&mut self, conn: &protocol::Connection) -> Result<Uuid, CoreError> {
+    let session_id = Uuid::new_v4();
+    let (cmd_tx, cmd_rx) = flume::unbounded::<SessionCmd>();
+    let (ready_tx, ready_rx) = flume::bounded::<Result<(), CoreError>>(1);
+
+    let timeout = self.connect_timeout;
+    let connection_id = conn.id;
+    let event_tx = self.event_tx.clone();
+    let transfers = Arc::clone(&self.transfers);
+
+    let thread = thread::Builder::new()
+        .name(format!("local-session-{session_id}"))
+        .spawn(move || {
+            local_session_worker(session_id, timeout, ready_tx, cmd_rx, event_tx, transfers);
+        })
+        .map_err(|e| CoreError::Other(format!("spawn local thread: {e}")))?;
+
+    match ready_rx.recv() {
+        Ok(Ok(())) => {
+            self.sessions.insert(
+                session_id,
+                LiveSessionHandle { connection_id, cmd_tx, thread: Some(thread) },
+            );
+            Ok(session_id)
+        }
+        Ok(Err(e)) => { let _ = thread.join(); Err(e) }
+        Err(_) => { let _ = thread.join(); Err(CoreError::Other("local worker exited before ready".into())) }
+    }
+}
+
+
+
+    fn connect_serial(&mut self, conn: &protocol::Connection) -> Result<Uuid, CoreError> {
+        let session_id = Uuid::new_v4();
+        let (cmd_tx, cmd_rx) = flume::unbounded::<SessionCmd>();
+        let (ready_tx, ready_rx) = flume::bounded::<Result<(), CoreError>>(1);
+
+        let config = conn.serial_config.clone().ok_or_else(|| {
+            CoreError::Other("串口连接缺少 serialConfig（端口号 / 波特率）".into())
+        })?;
+        if config.port_name.trim().is_empty() {
+            return Err(CoreError::Other("串口名称不能为空".into()));
+        }
+        let timeout = self.connect_timeout;
+        let connection_id = conn.id;
+        let event_tx = self.event_tx.clone();
+        let transfers = Arc::clone(&self.transfers);
+
+        let thread = thread::Builder::new()
+            .name(format!("serial-session-{session_id}"))
+            .spawn(move || {
+                serial_session_worker(
+                    session_id,
+                    config,
+                    timeout,
+                    ready_tx,
+                    cmd_rx,
+                    event_tx,
+                    transfers,
+                );
+            })
+            .map_err(|e| CoreError::Other(format!("spawn serial thread: {e}")))?;
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => {
+                self.sessions.insert(
+                    session_id,
+                    LiveSessionHandle {
+                        connection_id,
+                        cmd_tx,
+                        thread: Some(thread),
+                    },
+                );
+                Ok(session_id)
+            }
+            Ok(Err(e)) => {
+                let _ = thread.join();
+                Err(e)
+            }
+            Err(_) => {
+                let _ = thread.join();
+                Err(CoreError::Other(
+                    "serial worker exited before ready".into(),
+                ))
+            }
+        }
+    }
+
+fn connect_ssh(
         &mut self,
         conn: &Connection,
         policy: KnownHostsPolicy,
@@ -647,7 +785,216 @@ fn session_worker(
     }
 }
 
-/// Establish SSH, possibly through ProxyJump hops.
+#[allow(clippy::too_many_arguments)]
+fn telnet_session_worker(
+    session_id: Uuid,
+    host: String,
+    port: u16,
+    timeout: Duration,
+    ready_tx: flume::Sender<Result<(), CoreError>>,
+    cmd_rx: flume::Receiver<SessionCmd>,
+    event_tx: flume::Sender<SessionEvent>,
+    transfers: Arc<TransferQueue>,
+) {
+    match crate::telnet::TelnetSession::connect(&host, port, timeout) {
+        Ok(mut telnet) => {
+            let _ = ready_tx.send(Ok(()));
+            drop(ready_tx);
+            let reason = run_telnet_cmd_loop(session_id, &mut telnet, cmd_rx, event_tx.clone());
+            let _ = telnet.close();
+            let _ = event_tx.send(SessionEvent::Disconnected {
+                session_id,
+                reason,
+            });
+        }
+        Err(e) => {
+            let _ = ready_tx.send(Err(e));
+        }
+    }
+}
+
+fn run_telnet_cmd_loop(
+    session_id: Uuid,
+    telnet: &mut crate::telnet::TelnetSession,
+    cmd_rx: flume::Receiver<SessionCmd>,
+    event_tx: flume::Sender<SessionEvent>,
+) -> String {
+    let _ = telnet.set_nonblocking(false);
+    let mut read_buf = [0u8; 32 * 1024];
+    let poll = Duration::from_millis(15);
+
+    loop {
+        match cmd_rx.recv_timeout(poll) {
+            Ok(cmd) => match cmd {
+                SessionCmd::Write { data, .. } => {
+                    let _ = telnet.write(&data);
+                }
+                SessionCmd::Resize { .. } => {}
+                SessionCmd::OpenShell { .. } => {}
+                SessionCmd::Shutdown => return "shutdown".into(),
+                _ => {}
+            },
+            Err(flume::RecvTimeoutError::Timeout) => {}
+            Err(flume::RecvTimeoutError::Disconnected) => return "channel closed".into(),
+        }
+
+        match telnet.try_read(&mut read_buf) {
+            Ok(Some(0)) => return "remote closed".into(),
+            Ok(Some(n)) => {
+                let _ = event_tx.send(SessionEvent::Output {
+                    session_id,
+                    channel_id: session_id,
+                    data: read_buf[..n].to_vec(),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = event_tx.send(SessionEvent::Disconnected { session_id, reason: msg.clone() });
+                return msg;
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn local_session_worker(
+    session_id: Uuid,
+    timeout: Duration,
+    ready_tx: flume::Sender<Result<(), CoreError>>,
+    cmd_rx: flume::Receiver<SessionCmd>,
+    event_tx: flume::Sender<SessionEvent>,
+    transfers: Arc<TransferQueue>,
+) {
+    match crate::local::LocalSession::spawn(80, 24) {
+        Ok(mut local) => {
+            let _ = ready_tx.send(Ok(()));
+            drop(ready_tx);
+            let reason = run_local_cmd_loop(session_id, &mut local, cmd_rx, event_tx.clone());
+            let _ = local.kill();
+            let _ = event_tx.send(SessionEvent::Disconnected {
+                session_id,
+                reason,
+            });
+        }
+        Err(e) => {
+            let _ = ready_tx.send(Err(e));
+        }
+    }
+}
+
+fn run_local_cmd_loop(
+    session_id: Uuid,
+    local: &mut crate::local::LocalSession,
+    cmd_rx: flume::Receiver<SessionCmd>,
+    event_tx: flume::Sender<SessionEvent>,
+) -> String {
+    let _ = local.set_nonblocking();
+    let mut read_buf = [0u8; 32 * 1024];
+    let poll = Duration::from_millis(15);
+
+    loop {
+        match cmd_rx.recv_timeout(poll) {
+            Ok(cmd) => match cmd {
+                SessionCmd::Write { data, .. } => {
+                    let _ = local.write(&data);
+                }
+                SessionCmd::Resize { .. } => {}
+                SessionCmd::OpenShell { .. } => {}
+                SessionCmd::Shutdown => return "shutdown".into(),
+                _ => {}
+            },
+            Err(flume::RecvTimeoutError::Timeout) => {}
+            Err(flume::RecvTimeoutError::Disconnected) => return "channel closed".into(),
+        }
+
+        match local.try_read(&mut read_buf) {
+            Ok(Some(0)) => return "process exited".into(),
+            Ok(Some(n)) => {
+                let _ = event_tx.send(SessionEvent::Output {
+                    session_id,
+                    channel_id: session_id,
+                    data: read_buf[..n].to_vec(),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = event_tx.send(SessionEvent::Disconnected { session_id, reason: msg.clone() });
+                return msg;
+            }
+        }
+    }
+}
+
+
+#[allow(clippy::too_many_arguments)]
+fn serial_session_worker(
+    session_id: Uuid,
+    config: protocol::SerialConfig,
+    timeout: Duration,
+    ready_tx: flume::Sender<Result<(), CoreError>>,
+    cmd_rx: flume::Receiver<SessionCmd>,
+    event_tx: flume::Sender<SessionEvent>,
+    transfers: Arc<TransferQueue>,
+) {
+    match crate::serial::SerialSession::open(&config, timeout) {
+        Ok(mut serial) => {
+            let _ = ready_tx.send(Ok(()));
+            drop(ready_tx);
+            let reason = run_serial_cmd_loop(session_id, &mut serial, cmd_rx, event_tx.clone());
+            let _ = serial.close();
+            let _ = event_tx.send(SessionEvent::Disconnected { session_id, reason });
+        }
+        Err(e) => {
+            let _ = ready_tx.send(Err(e));
+        }
+    }
+}
+
+fn run_serial_cmd_loop(
+    session_id: Uuid,
+    serial: &mut crate::serial::SerialSession,
+    cmd_rx: flume::Receiver<SessionCmd>,
+    event_tx: flume::Sender<SessionEvent>,
+) -> String {
+    let mut read_buf = [0u8; 32 * 1024];
+    let poll = Duration::from_millis(15);
+
+    loop {
+        match cmd_rx.recv_timeout(poll) {
+            Ok(cmd) => match cmd {
+                SessionCmd::Write { data, .. } => { let _ = serial.write(&data); }
+                SessionCmd::Resize { .. } => {}
+                SessionCmd::OpenShell { .. } => {}
+                SessionCmd::Shutdown => return "shutdown".into(),
+                _ => {}
+            },
+            Err(flume::RecvTimeoutError::Timeout) => {}
+            Err(flume::RecvTimeoutError::Disconnected) => return "channel closed".into(),
+        }
+
+        match serial.try_read(&mut read_buf) {
+            Ok(Some(0)) => return "serial closed".into(),
+            Ok(Some(n)) => {
+                let _ = event_tx.send(SessionEvent::Output {
+                    session_id,
+                    channel_id: session_id,
+                    data: read_buf[..n].to_vec(),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = event_tx.send(SessionEvent::Disconnected { session_id, reason: msg.clone() });
+                return msg;
+            }
+        }
+    }
+}
+
+
+// Establish SSH, possibly through ProxyJump hops.
 ///
 /// `chain` is `[outermost_jump, …, target]` (len ≥ 1). Intermediate hops open a
 /// local 127.0.0.1 relay into `channel_direct_tcpip` toward the next hop; the
@@ -1077,6 +1424,7 @@ fn handle_cmd(
                 sftp_ops::upload(s, &local_path, &remote_path, &cancel, |bytes, total| {
                     let _ = event_tx.send(SessionEvent::TransferProgress {
                         transfer_id,
+                        session_id,
                         bytes,
                         total,
                         status: "running".into(),
@@ -1085,7 +1433,7 @@ fn handle_cmd(
                 })
             })();
             sess.set_blocking(false);
-            emit_transfer_result(event_tx, transfer_id, result);
+            emit_transfer_result(event_tx, session_id, transfer_id, result);
             transfers.finish(transfer_id);
             let _ = reply.send(Ok(()));
             false
@@ -1104,6 +1452,7 @@ fn handle_cmd(
                 sftp_ops::download(s, &remote_path, &local_path, &cancel, |bytes, total| {
                     let _ = event_tx.send(SessionEvent::TransferProgress {
                         transfer_id,
+                        session_id,
                         bytes,
                         total,
                         status: "running".into(),
@@ -1112,7 +1461,7 @@ fn handle_cmd(
                 })
             })();
             sess.set_blocking(false);
-            emit_transfer_result(event_tx, transfer_id, result);
+            emit_transfer_result(event_tx, session_id, transfer_id, result);
             transfers.finish(transfer_id);
             let _ = reply.send(Ok(()));
             false
@@ -1408,6 +1757,7 @@ fn poll_remote_tunnels(
 
 fn emit_transfer_result(
     event_tx: &flume::Sender<SessionEvent>,
+    session_id: Uuid,
     transfer_id: Uuid,
     result: Result<sftp_ops::TransferOutcome, CoreError>,
 ) {
@@ -1415,6 +1765,7 @@ fn emit_transfer_result(
         Ok(sftp_ops::TransferOutcome::Done { bytes, total }) => {
             let _ = event_tx.send(SessionEvent::TransferProgress {
                 transfer_id,
+                session_id,
                 bytes,
                 total,
                 status: "done".into(),
@@ -1424,6 +1775,7 @@ fn emit_transfer_result(
         Ok(sftp_ops::TransferOutcome::Cancelled { bytes, total }) => {
             let _ = event_tx.send(SessionEvent::TransferProgress {
                 transfer_id,
+                session_id,
                 bytes,
                 total,
                 status: "cancelled".into(),
@@ -1433,6 +1785,7 @@ fn emit_transfer_result(
         Err(e) => {
             let _ = event_tx.send(SessionEvent::TransferProgress {
                 transfer_id,
+                session_id,
                 bytes: 0,
                 total: None,
                 status: "failed".into(),
@@ -1461,9 +1814,11 @@ mod tests {
             tags: vec![],
             jump_host: None,
             tunnels: vec![],
+            protocol: Default::default(),
             source: ConnectionSource::Manual,
             last_connected: None,
             notes: None,
+            serial_config: None,
         }
     }
 

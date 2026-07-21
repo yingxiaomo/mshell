@@ -27,4 +27,41 @@ export default defineConfig(async () => ({
     },
   },
   envPrefix: ["VITE_", "TAURI_"],
+
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          codemirror: [
+            "codemirror",
+            "@codemirror/commands",
+            "@codemirror/language",
+            "@codemirror/state",
+            "@codemirror/view",
+            "@codemirror/search",
+            "@codemirror/theme-one-dark",
+            "@codemirror/lang-javascript",
+            "@codemirror/lang-json",
+            "@codemirror/lang-html",
+            "@codemirror/lang-xml",
+            "@codemirror/lang-python",
+            "@codemirror/lang-css",
+            "@codemirror/lang-markdown",
+          ],
+          xterm: [
+            "@xterm/xterm",
+            "@xterm/addon-fit",
+            "@xterm/addon-search",
+            "@xterm/addon-web-links",
+          ],
+          vendor: ["react", "react-dom", "zustand", "lucide-react", "clsx"],
+        },
+      },
+    },
+  },
+
+  test: {
+    environment: "node",
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+  },
 }));

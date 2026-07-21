@@ -4,6 +4,22 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Connection protocol type.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectionProtocol {
+    Ssh,
+    Telnet,
+    Local,
+    Serial,
+}
+
+impl Default for ConnectionProtocol {
+    fn default() -> Self {
+        Self::Ssh
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Connection {
@@ -11,6 +27,8 @@ pub struct Connection {
     pub name: String,
     pub host: String,
     pub port: u16,
+    #[serde(default)]
+    pub protocol: ConnectionProtocol,
     pub username: String,
     pub auth: AuthMethod,
     pub group: Option<String>,
@@ -20,7 +38,28 @@ pub struct Connection {
     pub source: ConnectionSource,
     pub last_connected: Option<DateTime<Utc>>,
     pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_config: Option<SerialConfig>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialConfig {
+    pub port_name: String,
+    #[serde(default = "default_baud")]
+    pub baud_rate: u32,
+    #[serde(default = "default_data_bits")]
+    pub data_bits: u8,
+    #[serde(default = "default_stop_bits")]
+    pub stop_bits: String,
+    #[serde(default = "default_parity")]
+    pub parity: String,
+}
+
+fn default_baud() -> u32 { 9600 }
+fn default_data_bits() -> u8 { 8 }
+fn default_stop_bits() -> String { "1".into() }
+fn default_parity() -> String { "none".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -87,15 +126,40 @@ pub enum TunnelType {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub theme: String,
+    #[serde(default = "default_code_theme")]
     pub code_theme: String,
     pub terminal_font: String,
     pub terminal_font_size: u16,
+    #[serde(default = "default_scrollback")]
+    pub terminal_scrollback: u32,
+    #[serde(default)]
+    pub copy_on_select: bool,
     pub remember_password_default: bool,
     pub auto_reconnect: bool,
     pub idle_session_minutes: u32,
     pub switch_to_files_on_open: bool,
     pub ssh_config_path: Option<String>,
     pub default_download_dir: Option<String>,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: u32,
+    #[serde(default = "default_editor_split_ratio")]
+    pub editor_split_ratio: f64,
+}
+
+fn default_code_theme() -> String {
+    "one-dark".into()
+}
+
+fn default_scrollback() -> u32 {
+    5000
+}
+
+fn default_sidebar_width() -> u32 {
+    260
+}
+
+fn default_editor_split_ratio() -> f64 {
+    0.55
 }
 
 impl Default for AppSettings {
@@ -105,12 +169,16 @@ impl Default for AppSettings {
             code_theme: "one-dark".into(),
             terminal_font: "Cascadia Code, Consolas, monospace".into(),
             terminal_font_size: 14,
+            terminal_scrollback: 5000,
+            copy_on_select: false,
             remember_password_default: true,
             auto_reconnect: true,
             idle_session_minutes: 30,
             switch_to_files_on_open: true,
             ssh_config_path: None,
             default_download_dir: None,
+            sidebar_width: 260,
+            editor_split_ratio: 0.55,
         }
     }
 }
@@ -146,6 +214,8 @@ pub struct TerminalOutputEvent {
 #[serde(rename_all = "camelCase")]
 pub struct TransferProgressEvent {
     pub transfer_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
     pub bytes: u64,
     pub total: Option<u64>,
     pub status: String, // "running" | "done" | "failed" | "cancelled"
@@ -208,9 +278,11 @@ mod tests {
             tags: vec![],
             jump_host: None,
             tunnels: vec![],
+            protocol: Default::default(),
             source: ConnectionSource::Manual,
             last_connected: None,
             notes: None,
+            serial_config: None,
         };
         let s = serde_json::to_string(&c).unwrap();
         let back: Connection = serde_json::from_str(&s).unwrap();

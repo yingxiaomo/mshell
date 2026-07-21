@@ -5,7 +5,10 @@ import {
   sessionOpen as sessionOpenCmd,
   sessionReconnect as sessionReconnectCmd,
 } from "../lib/tauri";
+import { clearTerminalBuffers } from "../lib/events";
+import { estimateTerminalGeometry } from "../lib/terminalGeometry";
 import { useSettingsStore } from "./settings";
+import { useUiStore } from "./ui";
 
 export type TerminalTab = {
   sessionId: string;
@@ -44,26 +47,51 @@ type SessionsState = {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** Active auto-reconnect loops keyed by the sessionId at disconnect time. */
-const autoReconnectLoops = new Set<string>();
+/** Survive Vite HMR so SessionList / FilesView / TerminalTabs share one store. */
+// Bump suffix when store shape / side-effects change so HMR drops stale instances.
+const SESSIONS_KEY = "__momoshell_sessions_store_v2__";
+const LOOPS_KEY = "__momoshell_reconnect_loops_v2__";
 
-export const useSessionsStore = create<SessionsState>((set, get) => ({
+type GlobalBag = typeof globalThis & {
+  [SESSIONS_KEY]?: ReturnType<typeof createSessionsStore>;
+  [LOOPS_KEY]?: Set<string>;
+};
+
+const g = globalThis as GlobalBag;
+
+/** Active auto-reconnect loops keyed by the sessionId at disconnect time. */
+const autoReconnectLoops: Set<string> =
+  g[LOOPS_KEY] ?? (g[LOOPS_KEY] = new Set<string>());
+
+function createSessionsStore() {
+  return create<SessionsState>((set, get) => ({
   tabs: [],
   activeSessionId: null,
   opening: false,
   openError: null,
 
   addTab: (result) => {
+    // Defensive: backend must return camelCase SessionOpenResult.
+    const sessionId = result?.sessionId;
+    const channelId = result?.terminalChannelId;
+    if (!sessionId || !channelId) {
+      console.error("[sessions] addTab: invalid SessionOpenResult", result);
+      set({
+        openError:
+          "连接成功但返回数据不完整（缺少 sessionId/channelId），终端标签无法创建。",
+      });
+      return;
+    }
     const tab: TerminalTab = {
-      sessionId: result.sessionId,
+      sessionId,
       connectionId: result.connectionId,
-      channelId: result.terminalChannelId,
-      name: result.name,
+      channelId,
+      name: result.name || "session",
       disconnected: false,
       reconnecting: false,
     };
     set((s) => ({
-      tabs: [...s.tabs, tab],
+      tabs: [...s.tabs.filter((t) => t.sessionId !== tab.sessionId), tab],
       activeSessionId: tab.sessionId,
       openError: null,
     }));
@@ -73,6 +101,9 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
 
   closeTab: async (sessionId) => {
     autoReconnectLoops.delete(sessionId);
+    clearTerminalBuffers(sessionId);
+    // Editor is bound to a live session — close it with the terminal tab.
+    useUiStore.getState().closeEditorForSession(sessionId);
     try {
       await sessionCloseCmd(sessionId);
     } catch {
@@ -83,6 +114,8 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
 
   removeTabLocal: (sessionId) => {
     autoReconnectLoops.delete(sessionId);
+    clearTerminalBuffers(sessionId);
+    useUiStore.getState().closeEditorForSession(sessionId);
     set((s) => {
       const tabs = s.tabs.filter((t) => t.sessionId !== sessionId);
       let activeSessionId = s.activeSessionId;
@@ -133,10 +166,13 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
   },
 
   markConnected: (oldSessionId, newSessionId, newChannelId, result) => {
+    const nextId = result?.sessionId ?? newSessionId ?? oldSessionId;
+    if (nextId !== oldSessionId) {
+      useUiStore.getState().rebindEditorSession(oldSessionId, nextId);
+    }
     set((s) => {
       const tabs = s.tabs.map((t) => {
         if (t.sessionId !== oldSessionId) return t;
-        const nextId = result?.sessionId ?? newSessionId ?? t.sessionId;
         const nextChannel =
           result?.terminalChannelId ?? newChannelId ?? t.channelId;
         return {
@@ -152,8 +188,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
       });
       let activeSessionId = s.activeSessionId;
       if (activeSessionId === oldSessionId) {
-        activeSessionId =
-          result?.sessionId ?? newSessionId ?? activeSessionId;
+        activeSessionId = nextId;
       }
       return { tabs, activeSessionId, openError: null };
     });
@@ -173,11 +208,12 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
 
     try {
       let result: SessionOpenResult;
+      const { cols, rows } = estimateTerminalGeometry();
       try {
-        result = await sessionReconnectCmd(sessionId);
+        result = await sessionReconnectCmd(sessionId, cols, rows);
       } catch {
         // Session may already be gone from the manager; open by connection.
-        result = await sessionOpenCmd(tab.connectionId);
+        result = await sessionOpenCmd(tab.connectionId, cols, rows);
       }
       // Tab may have been closed while awaiting.
       if (!get().tabs.some((t) => t.sessionId === sessionId)) {
@@ -225,7 +261,11 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
       (t) => t.synced && t.sessionId !== excludeSessionId,
     );
   },
-}));
+  }));
+}
+
+export const useSessionsStore: ReturnType<typeof createSessionsStore> =
+  g[SESSIONS_KEY] ?? (g[SESSIONS_KEY] = createSessionsStore());
 
 async function runAutoReconnect(
   sessionId: string,

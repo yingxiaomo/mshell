@@ -39,3 +39,11 @@ coverage/
 # Misc
 *.tsbuildinfo
 .turbo
+
+# Local / temp
+launch_now.cmd
+_tmp_*
+*.local
+*.output
+_patch_alerts.py
+docs/

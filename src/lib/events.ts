@@ -21,29 +21,78 @@ function safeListen<T>(
   }
 }
 
-// ── Global output buffer ────────────────────────────────────────────
-// A single Tauri listener stores terminal output for ALL sessions.
-// Each TerminalView calls consumeTerminalOutput() periodically to
-// retrieve and write only its own session's data.
-const buffer: Map<string, Uint8Array[]> = new Map();
+// ── Global output buffer (HMR-safe via globalThis) ───────────────────
+// Single Tauri listener stores terminal output for ALL sessions.
+// TerminalView polls consumeTerminalOutput(); StrictMode remount must not
+// permanently drop early MOTD/prompt, so we keep a replayable history.
 
-export async function initEarlyTerminalBuffer(): Promise<void> {
-  await safeListen<TerminalOutputEvent>(
-    EventName.TERMINAL_OUTPUT,
-    (ev) => {
-      let list = buffer.get(ev.sessionId);
-      if (!list) { list = []; buffer.set(ev.sessionId, list); }
-      list.push(decodeTerminalOutputBytes(ev.dataB64));
-    },
-  );
+const BUF_KEY = "__momoshell_term_buf__";
+type BufBag = {
+  pending: Map<string, Uint8Array[]>;
+  history: Map<string, Uint8Array[]>;
+  inited: boolean;
+};
+type GlobalBag = typeof globalThis & { [BUF_KEY]?: BufBag };
+const g = globalThis as GlobalBag;
+const buf: BufBag =
+  g[BUF_KEY] ??
+  (g[BUF_KEY] = {
+    pending: new Map(),
+    history: new Map(),
+    inited: false,
+  });
+
+const MAX_HISTORY_CHUNKS = 800;
+
+function pushHistory(sessionId: string, chunk: Uint8Array) {
+  let h = buf.history.get(sessionId);
+  if (!h) {
+    h = [];
+    buf.history.set(sessionId, h);
+  }
+  h.push(chunk);
+  if (h.length > MAX_HISTORY_CHUNKS) {
+    h.splice(0, h.length - MAX_HISTORY_CHUNKS);
+  }
 }
 
-/** Atomically take all buffered bytes for a session. Returns them in order. */
+export async function initEarlyTerminalBuffer(): Promise<void> {
+  if (buf.inited) return;
+  buf.inited = true;
+  await safeListen<TerminalOutputEvent>(EventName.TERMINAL_OUTPUT, (ev) => {
+    const chunk = decodeTerminalOutputBytes(ev.dataB64);
+    let list = buf.pending.get(ev.sessionId);
+    if (!list) {
+      list = [];
+      buf.pending.set(ev.sessionId, list);
+    }
+    list.push(chunk);
+    pushHistory(ev.sessionId, chunk);
+  });
+}
+
+/**
+ * Take pending (not-yet-consumed) bytes for a session.
+ * History is retained so a remount can replay via {@link replayTerminalHistory}.
+ */
 export function consumeTerminalOutput(sessionId: string): Uint8Array[] {
-  const list = buffer.get(sessionId);
+  const list = buf.pending.get(sessionId);
   if (!list || list.length === 0) return [];
-  buffer.delete(sessionId);
+  buf.pending.set(sessionId, []);
   return list;
+}
+
+/** Full history for remount / StrictMode recovery (oldest → newest). */
+export function replayTerminalHistory(sessionId: string): Uint8Array[] {
+  const h = buf.history.get(sessionId);
+  if (!h || h.length === 0) return [];
+  return h.slice();
+}
+
+/** Drop buffers when a session tab is closed. */
+export function clearTerminalBuffers(sessionId: string): void {
+  buf.pending.delete(sessionId);
+  buf.history.delete(sessionId);
 }
 
 // ── Other event helpers ────────────────────────────────────────────

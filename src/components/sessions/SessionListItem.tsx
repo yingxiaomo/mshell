@@ -12,6 +12,46 @@ function isImported(c: Connection): boolean {
   return c.source?.type === "sshConfig";
 }
 
+function protocolLabel(c: Connection): string | null {
+  switch (c.protocol) {
+    case "telnet":
+      return "telnet";
+    case "local":
+      return "local";
+    case "serial":
+      return "serial";
+    default:
+      return null;
+  }
+}
+
+function subtitleFor(c: Connection): string {
+  switch (c.protocol) {
+    case "telnet":
+      return `${c.host}:${c.port || 23}`;
+    case "local":
+      return "本机 shell";
+    case "serial": {
+      const sc = c.serialConfig;
+      if (sc) return `${sc.portName} · ${sc.baudRate}`;
+      return c.host || "COM?";
+    }
+    default:
+      return `${c.username}@${c.host}:${c.port}`;
+  }
+}
+
+const GROUP_COLORS = [
+  "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6",
+  "#06b6d4", "#84cc16", "#f97316", "#ec4899", "#6366f1",
+];
+
+function groupColor(group: string | null | undefined): string | undefined {
+  if (!group) return undefined;
+  let hash = 0;
+  for (let i = 0; i < group.length; i++) hash = ((hash << 5) - hash) + group.charCodeAt(i);
+  return GROUP_COLORS[Math.abs(hash) % GROUP_COLORS.length];
+}
 export function SessionListItem({
   connection,
   onEdit,
@@ -20,10 +60,13 @@ export function SessionListItem({
   onDuplicateAsLocal,
 }: SessionListItemProps) {
   const imported = isImported(connection);
-  const subtitle = `${connection.username}@${connection.host}:${connection.port}`;
+  const subtitle = subtitleFor(connection);
+  const proto = protocolLabel(connection);
+  const color = imported ? undefined : groupColor(connection.group);
   return (
     <li
-      className="group flex cursor-pointer items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900/60 px-3 py-2 hover:border-zinc-700"
+      className="group flex cursor-pointer items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 hover:border-zinc-700 hover:bg-zinc-800/50"
+      style={color ? { borderLeftColor: color, borderLeftWidth: 3 } : undefined}
       onDoubleClick={() => {
         if (!imported) onOpen(connection);
       }}
@@ -34,6 +77,11 @@ export function SessionListItem({
           <span className="truncate text-sm font-medium text-zinc-100">
             {connection.name}
           </span>
+          {proto && (
+            <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+              {proto}
+            </span>
+          )}
           {imported && (
             <span
               className="shrink-0 rounded bg-amber-900/50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-300"
@@ -57,7 +105,7 @@ export function SessionListItem({
               e.stopPropagation();
               onDuplicateAsLocal?.(connection);
             }}
-            className="rounded px-2 py-1 text-xs text-sky-300 hover:bg-zinc-800"
+            className="rounded px-2 py-1 text-xs text-sky-400 hover:bg-zinc-800"
           >
             复制为本地
           </button>

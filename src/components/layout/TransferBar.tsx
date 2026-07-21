@@ -6,6 +6,7 @@ import {
   useTransfersStore,
 } from "../../stores/transfers";
 import { onTransferProgress } from "../../lib/events";
+import { showToast } from "../ui/Toast";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -37,10 +38,17 @@ function statusLabel(status: TransferItem["status"]): string {
 export function TransferBar() {
   const items = useTransfersStore((s) => s.items);
   const cancel = useTransfersStore((s) => s.cancel);
+  const cancelAll = useTransfersStore((s) => s.cancelAll);
+  const retry = useTransfersStore((s) => s.retry);
   const clearFinished = useTransfersStore((s) => s.clearFinished);
+  const remove = useTransfersStore((s) => s.remove);
   const applyProgress = useTransfersStore((s) => s.applyProgress);
 
   const running = useMemo(() => hasRunningTransfers(items), [items]);
+  const finishedCount = useMemo(
+    () => items.filter((t) => t.status !== "running").length,
+    [items],
+  );
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
@@ -55,19 +63,19 @@ export function TransferBar() {
     };
   }, [applyProgress]);
 
-  // Auto-expand when a job starts.
   useEffect(() => {
     if (running) setExpanded(true);
   }, [running]);
 
   if (items.length === 0) return null;
 
+  const runningCount = items.filter((t) => t.status === "running").length;
   const summary = running
-    ? `${items.filter((t) => t.status === "running").length} 个传输中`
+    ? `${runningCount} 个传输中`
     : `${items.length} 个传输`;
 
   return (
-    <div className="border-t border-zinc-800 bg-zinc-900/95 text-xs text-zinc-300">
+    <div className="border-t border-zinc-800 bg-zinc-900 text-xs text-zinc-300">
       <div className="flex h-7 items-center gap-2 px-3">
         <button
           type="button"
@@ -79,24 +87,41 @@ export function TransferBar() {
         </button>
         <span className="text-zinc-500">{summary}</span>
         <div className="flex-1" />
-        <button
-          type="button"
-          className="rounded px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-          onClick={() => clearFinished()}
-          title="清除已完成"
-        >
-          清除
-        </button>
+        {running && (
+          <button
+            type="button"
+            className="rounded px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-red-400"
+            onClick={() => void cancelAll()}
+            title="取消全部进行中的传输"
+          >
+            全部取消
+          </button>
+        )}
+        {finishedCount > 0 && (
+          <button
+            type="button"
+            className="rounded px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+            onClick={() => clearFinished()}
+            title="清除已完成 / 失败 / 已取消"
+          >
+            清除完成
+          </button>
+        )}
       </div>
 
       {expanded && (
-        <ul className="max-h-40 overflow-auto border-t border-zinc-800/80 px-2 py-1">
+        <ul className="max-h-44 overflow-auto border-t border-zinc-800 px-2 py-1">
           {items.map((item) => {
             const pct = progressPct(item);
+            const canRetry =
+              (item.status === "failed" || item.status === "cancelled") &&
+              !!item.localPath &&
+              !!item.remotePath &&
+              !!item.sessionId;
             return (
               <li
                 key={item.transferId}
-                className="mb-1 rounded border border-zinc-800/80 bg-zinc-950/50 px-2 py-1.5"
+                className="mb-1 rounded border border-zinc-800 bg-zinc-950/50 px-2 py-1.5"
               >
                 <div className="flex items-center gap-2">
                   <span
@@ -118,7 +143,7 @@ export function TransferBar() {
                   </span>
                   <span
                     className={clsx(
-                      "shrink-0 w-10 text-right",
+                      "w-10 shrink-0 text-right",
                       item.status === "failed" && "text-red-400",
                       item.status === "done" && "text-emerald-500",
                       item.status === "cancelled" && "text-zinc-500",
@@ -136,6 +161,29 @@ export function TransferBar() {
                       onClick={() => void cancel(item.transferId)}
                     >
                       取消
+                    </button>
+                  )}
+                  {canRetry && (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded px-1 text-zinc-500 hover:bg-zinc-800 hover:text-sky-400"
+                      onClick={() => {
+                        void retry(item.transferId).catch((e) => {
+                          showToast(e instanceof Error ? e.message : String(e), "error");
+                        });
+                      }}
+                    >
+                      重试
+                    </button>
+                  )}
+                  {item.status !== "running" && (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded px-1 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300"
+                      title="移除"
+                      onClick={() => remove(item.transferId)}
+                    >
+                      ×
                     </button>
                   )}
                 </div>

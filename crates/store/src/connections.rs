@@ -14,7 +14,21 @@ impl ConnectionStore {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let items = if path.exists() {
             let data = std::fs::read_to_string(path)?;
-            serde_json::from_str(&data)?
+            // Empty / corrupt file must not take down app startup — start with empty list.
+            if data.trim().is_empty() {
+                Vec::new()
+            } else {
+                match serde_json::from_str(&data) {
+                    Ok(items) => items,
+                    Err(e) => {
+                        eprintln!(
+                            "connections store: failed to parse {}: {e}; starting empty",
+                            path.display()
+                        );
+                        Vec::new()
+                    }
+                }
+            }
         } else {
             Vec::new()
         };
@@ -113,11 +127,14 @@ mod tests {
             },
             group: Some("prod".into()),
             tags: vec!["ssh".into()],
+            #[allow(dead_code)]
+            protocol: Default::default(),
             jump_host: None,
             tunnels: vec![],
             source: ConnectionSource::Manual,
             last_connected: None,
             notes: None,
+            serial_config: None,
         }
     }
 
@@ -208,5 +225,17 @@ mod tests {
         let path = dir.path().join("missing.json");
         let store = ConnectionStore::open(&path).unwrap();
         assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn open_empty_or_invalid_file_yields_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.json");
+        std::fs::write(&empty, "").unwrap();
+        assert!(ConnectionStore::open(&empty).unwrap().list().unwrap().is_empty());
+
+        let bad = dir.path().join("bad.json");
+        std::fs::write(&bad, "{").unwrap();
+        assert!(ConnectionStore::open(&bad).unwrap().list().unwrap().is_empty());
     }
 }

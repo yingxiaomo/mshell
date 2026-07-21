@@ -10,7 +10,7 @@ body,
 
 body {
   overflow: hidden;
-  background-color: #09090b; /* zinc-950 — avoid pure white flash/blank */
+  background-color: #09090b;
   color: #f4f4f5;
   font-family:
     ui-sans-serif,
@@ -24,7 +24,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Theme hooks (shell is dark-first; light is a soft override). */
+/* Theme hooks */
 html.theme-dark,
 html[data-theme="dark"] {
   color-scheme: dark;
@@ -42,12 +42,15 @@ html[data-theme="light"] body {
 }
 
 /* Hide scrollbar for split panes */
-.split-pane-container::-webkit-scrollbar { display: none; }
-.split-pane-container { -ms-overflow-style: none; scrollbar-width: none; }
+.split-pane-container::-webkit-scrollbar {
+  display: none;
+}
+.split-pane-container {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
 
-/* ── Custom dark scrollbar ───────────────────────────── */
-
-/* Thin, dark track + subtle thumb for Webkit (Edge / Chrome) */
+/* ── Scrollbars (dark default) ───────────────────────────── */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -56,18 +59,221 @@ html[data-theme="light"] body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #27272a;   /* zinc-800 */
+  background: #27272a;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3f3f46;   /* zinc-700 */
+  background: #3f3f46;
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
-
-/* Firefox */
 * {
   scrollbar-width: thin;
   scrollbar-color: #27272a transparent;
+}
+
+html.theme-light ::-webkit-scrollbar-thumb,
+html[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: #d4d4d8;
+}
+html.theme-light ::-webkit-scrollbar-thumb:hover,
+html[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: #a1a1aa;
+}
+html.theme-light *,
+html[data-theme="light"] * {
+  scrollbar-color: #d4d4d8 transparent;
+}
+
+/*
+ * ── Light mode: remap hard-coded zinc utilities ───────────
+ * Components still use dark zinc-* classes; under app chrome
+ * "light" we re-tint the shell so the whole UI flips.
+ * Terminal / CodeMirror keep their own fixed palettes.
+ */
+html.theme-light,
+html[data-theme="light"] {
+  /* ── solid backgrounds ── */
+  .bg-zinc-950 {
+    background-color: #f4f4f5 !important;
+  }
+  .bg-zinc-900 {
+    background-color: #ffffff !important;
+  }
+  .bg-zinc-800 {
+    background-color: #e4e4e7 !important;
+  }
+  .bg-zinc-700 {
+    background-color: #d4d4d8 !important;
+  }
+
+  /* ── opacity backgrounds (session cards, panels, dialogs) ── */
+  .bg-zinc-950\/80,
+  .bg-zinc-950\/60,
+  .bg-zinc-950\/50 {
+    background-color: rgb(244 244 245 / 0.95) !important;
+  }
+  .bg-zinc-900\/95 {
+    background-color: rgb(255 255 255 / 0.98) !important;
+  }
+  .bg-zinc-900\/90 {
+    background-color: rgb(255 255 255 / 0.97) !important;
+  }
+  .bg-zinc-900\/80 {
+    background-color: rgb(255 255 255 / 0.95) !important;
+  }
+  .bg-zinc-900\/60 {
+    background-color: #ffffff !important;
+  }
+  .bg-zinc-900\/40 {
+    background-color: rgb(255 255 255 / 0.85) !important;
+  }
+  .bg-zinc-800\/80 {
+    background-color: rgb(228 228 231 / 0.9) !important;
+  }
+  .bg-zinc-800\/60 {
+    background-color: rgb(228 228 231 / 0.75) !important;
+  }
+  .bg-zinc-800\/50 {
+    background-color: rgb(228 228 231 / 0.65) !important;
+  }
+
+  /* ── borders ── */
+  .border-zinc-800,
+  .border-zinc-800\/80 {
+    border-color: #e4e4e7 !important;
+  }
+  .border-zinc-700 {
+    border-color: #d4d4d8 !important;
+  }
+  .border-zinc-600 {
+    border-color: #a1a1aa !important;
+  }
+
+  /* ── text (high contrast on light surfaces) ── */
+  .text-zinc-100 {
+    color: #18181b !important;
+  }
+  .text-zinc-200 {
+    color: #27272a !important;
+  }
+  .text-zinc-300 {
+    color: #3f3f46 !important;
+  }
+  .text-zinc-400 {
+    color: #52525b !important;
+  }
+  .text-zinc-500 {
+    color: #52525b !important; /* was too pale */
+  }
+  .text-zinc-600 {
+    color: #71717a !important;
+  }
+
+  /* ── hovers ── */
+  .hover\:bg-zinc-900:hover {
+    background-color: #f4f4f5 !important;
+  }
+  .hover\:bg-zinc-800:hover,
+  .hover\:bg-zinc-800\/80:hover {
+    background-color: #e4e4e7 !important;
+  }
+  .hover\:bg-zinc-800\/60:hover {
+    background-color: rgb(228 228 231 / 0.85) !important;
+  }
+  .hover\:bg-zinc-800\/50:hover {
+    background-color: rgb(228 228 231 / 0.8) !important;
+  }
+  .hover\:bg-zinc-700:hover {
+    background-color: #d4d4d8 !important;
+  }
+  .hover\:bg-zinc-500:hover {
+    background-color: #a1a1aa !important;
+  }
+  .hover\:border-zinc-700:hover {
+    border-color: #a1a1aa !important;
+  }
+  .hover\:text-zinc-100:hover {
+    color: #18181b !important;
+  }
+  .hover\:text-zinc-200:hover {
+    color: #27272a !important;
+  }
+  .hover\:text-zinc-300:hover {
+    color: #3f3f46 !important;
+  }
+  .hover\:text-zinc-400:hover {
+    color: #52525b !important;
+  }
+
+  /* ── status / accent strips ── */
+  .bg-red-950\/40,
+  .bg-red-950\/30 {
+    background-color: rgb(254 226 226 / 0.9) !important;
+  }
+  .border-red-900\/50,
+  .border-red-900\/40 {
+    border-color: rgb(252 165 165 / 0.85) !important;
+  }
+  .text-red-300,
+  .text-red-400 {
+    color: #b91c1c !important;
+  }
+  .bg-amber-950\/50,
+  .bg-amber-900\/50 {
+    background-color: rgb(254 243 199 / 0.95) !important;
+  }
+  .border-amber-900\/40 {
+    border-color: rgb(252 211 77 / 0.9) !important;
+  }
+  .text-amber-100,
+  .text-amber-200\/90,
+  .text-amber-300,
+  .text-amber-400,
+  .text-amber-500\/90 {
+    color: #92400e !important;
+  }
+  .text-emerald-400 {
+    color: #047857 !important;
+  }
+  .text-sky-300,
+  .text-sky-400 {
+    color: #0369a1 !important;
+  }
+  .border-sky-600\/40 {
+    border-color: rgb(2 132 199 / 0.45) !important;
+  }
+  .bg-sky-600\/15 {
+    background-color: rgb(14 165 233 / 0.12) !important;
+  }
+  .bg-sky-600\/20 {
+    background-color: rgb(14 165 233 / 0.12) !important;
+  }
+  .bg-sky-600\/25 {
+    background-color: rgb(14 165 233 / 0.16) !important;
+  }
+  .hover\:bg-sky-600\/20:hover {
+    background-color: rgb(14 165 233 / 0.18) !important;
+  }
+  .hover\:bg-sky-600\/40:hover {
+    background-color: rgb(14 165 233 / 0.28) !important;
+  }
+  .hover\:text-sky-300:hover {
+    color: #0369a1 !important;
+  }
+  .text-sky-300,
+  .text-sky-400 {
+    color: #0369a1 !important;
+  }
+  .bg-sky-950 {
+    background-color: #e0f2fe !important;
+  }
+
+  /* form controls */
+  input,
+  select,
+  textarea {
+    color-scheme: light;
+  }
 }

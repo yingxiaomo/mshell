@@ -195,8 +195,8 @@ export function SettingsView() {
       </div>
 
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
-        {loading && !settings && (
-          <p className="text-xs text-zinc-500">加载中…</p>
+        {loading && (
+          <div className="flex items-center justify-center py-12"><p className="text-xs text-zinc-500">加载设置…</p></div>
         )}
         {(error || status) && (
           <p
@@ -236,14 +236,14 @@ export function SettingsView() {
               value={draft.codeTheme}
               onChange={(e) => update("codeTheme", e.target.value)}
             >
-              {THEMES.filter((t) => t.chrome !== "light").map((t) => (
+              {THEMES.map((t) => (
                 <option key={t.key} value={t.key}>
                   {t.label}
                 </option>
               ))}
             </select>
             <p className="mt-1 text-[11px] text-zinc-600">
-              控制终端背景色、编辑器语法高亮配色。
+              语法高亮配色。应用外观为浅色时自动使用对应的浅色高亮，保证白底可读。
             </p>
           </div>
           <div>
@@ -278,8 +278,43 @@ export function SettingsView() {
               }
             />
           </div>
+          <div>
+            <FieldLabel htmlFor="terminalScrollback">
+              终端回滚缓冲（行）
+            </FieldLabel>
+            <input
+              id="terminalScrollback"
+              type="number"
+              min={100}
+              max={100000}
+              step={500}
+              className={inputClass()}
+              value={draft.terminalScrollback}
+              onChange={(e) =>
+                update(
+                  "terminalScrollback",
+                  Math.max(
+                    100,
+                    Math.min(100_000, Number(e.target.value) || 5000),
+                  ),
+                )
+              }
+            />
+            <p className="mt-1 text-[11px] text-zinc-600">
+              已打开的终端需重开会话后才会应用新缓冲大小。
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-zinc-300">
+            <input
+              type="checkbox"
+              checked={draft.copyOnSelect}
+              onChange={(e) => update("copyOnSelect", e.target.checked)}
+              className="rounded border-zinc-600"
+            />
+            选中即复制
+          </label>
           <p className="text-[11px] text-zinc-600">
-            终端配色目前固定为深色方案；完整主题色板将在后续版本开放。
+            终端内：Ctrl+C 复制选区，Ctrl+V 粘贴；也可用右键 / 中键粘贴。
           </p>
         </Section>
 
