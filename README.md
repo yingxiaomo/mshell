@@ -1,96 +1,71 @@
 # momoshell
 
-Lightweight full-featured SSH client for Windows — Tauri 2 + React + Rust.
+轻量 Windows SSH 客户端 — Tauri 2 + React + Rust。
 
-轻量 Windows SSH 客户端（多标签终端、SFTP 侧栏、隧道、凭据管理）。
+多标签终端、SFTP 编辑、隧道、命令面板、多协议支持。
 
-## Requirements / 环境
+## 功能
 
-| Tool | Notes |
-|------|--------|
-| **Node.js** | 20+ |
-| **Rust** | stable, target `x86_64-pc-windows-msvc` |
-| **Visual Studio Build Tools** | MSVC C++ workload + Windows SDK（`ssh2` / `libssh2` 需要） |
+| 能力 | 说明 |
+|------|------|
+| **协议** | SSH · Telnet · 串口 (COM) · 本地终端 (cmd/PowerShell) |
+| **终端** | 多标签、xterm.js、断线重连、搜索 (Ctrl+F)、剪贴板粘贴 |
+| **SFTP** | 文件浏览、右键上传/下载/删除/重命名、拖拽上传、批量选择、传输队列 |
+| **编辑器** | 多文件标签、语法高亮（One Dark / Dracula / Nord …）、50+ 语言、查找替换 |
+| **隧道** | 本地/远程/动态端口转发、运行态起停、一键复制端口 |
+| **命令面板** | Ctrl+P 打开连接 / 切视图 / 切换主题 |
+| **快捷命令** | 保存常用命令，终端底部一键发送 |
+| **凭据** | Windows Credential Manager、密码/密钥/Agent/证书 |
+| **跳板机** | ProxyJump 多跳 |
+| **主机密钥** | unknown/changed 指纹确认、持久化信任 |
+| **主题** | 深色/浅色分开控制、代码高亮 8 套配色 |
+| **导出** | 连接 JSON（凭据留在 Credential Manager）|
 
-Install Build Tools: [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) → workload **Desktop development with C++**.
+## 环境
 
-## Develop / 开发
+| Tool | 版本 |
+|------|------|
+| Node.js | 20+ |
+| Rust | stable, x86_64-pc-windows-msvc |
+| VS Build Tools | Desktop development with C++（libssh2 需要） |
+
+## 开发
 
 ```bash
 npm install
-npm run tauri dev
+npm run tauri dev        # 热更新开发
+scripts/build.sh         # 构建 + 测试
+npm run tauri build      # 打包 MSI / NSIS
+npm test                 # 前端测试
+cargo test -p momoshell  # Rust 测试
 ```
 
-Frontend only (no native shell):
+## 快捷键
 
-```bash
-npm run dev
-```
-
-Typecheck + Vite production bundle:
-
-```bash
-npm run build
-```
-
-Rust check (workspace app package):
-
-```bash
-cargo check -p momoshell
-```
-
-## Package / 打包
-
-Icons live under `crates/app/icons/` (`32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.ico`, `icon.icns`) and are referenced from `crates/app/tauri.conf.json`.
-
-Release build (produces installer / binary under `src-tauri` / target bundle paths used by Tauri 2):
-
-```bash
-npm run tauri build
-```
-
-Artifacts typically appear under:
-
-- `crates/app/target/release/` — `momoshell.exe`
-- `crates/app/target/release/bundle/` — MSI / NSIS (when bundle targets are enabled)
-
-> Full `tauri build` needs the MSVC toolchain and can take several minutes on first run.
-
-## Features (V1)
-
-- Connection CRUD + optional `~/.ssh/config` import
-- Multi-tab PTY terminal (xterm.js) with reconnect
-- SFTP file sidebar + remote text editor (syntax themes)
-- Local / dynamic tunnels (and remote tunnel config)
-- ProxyJump multi-hop
-- Host key trust prompt (strict known_hosts; modal on unknown / changed)
-- Export / import connections JSON (secrets stay in Windows Credential Manager)
-- App chrome dark/light + separate code-highlight themes
-
-### Roadmap (V1.1+)
-
-See **[docs/superpowers/plans/2026-07-19-v1.1-deep-features.md](docs/superpowers/plans/2026-07-19-v1.1-deep-features.md)** for the deep-feature plan (multi-file editor, SFTP context menus, command palette, etc.).
-
-### Host keys
-
-On connect, unknown or changed host keys return a structured error; the UI shows a fingerprint modal. Trusting writes `%AppData%/momoshell/known_hosts.json`, then retries open.
-
-### Connection export
-
-**Settings → 导入 / 导出**:
-
-- Default export: connection metadata only (no plaintext passwords).
-- “含 credentialId” requires typing `EXPORT_SECRETS`; still does **not** dump keyring secret values — re-enter passwords after import on another machine.
-
-## Workspace
-
-| Path | Role |
+| 按键 | 功能 |
 |------|------|
-| `src/` | React frontend (Vite) |
-| `crates/app` | Tauri shell + command glue |
-| `crates/protocol` | Shared DTOs |
-| `crates/store` | Local JSON persistence |
-| `crates/ssh-core` | SSH / SFTP / tunnels / known_hosts |
+| Ctrl+P / Ctrl+K | 命令面板 |
+| ? / F1 | 快捷键帮助 |
+| Ctrl+F (终端) | 终端搜索 |
+| Ctrl+V (终端) | 粘贴 |
+| Ctrl+Tab / PgUp/PgDown | 切换会话标签 |
+| Ctrl+F / Ctrl+H (编辑器) | 查找 / 替换 |
+
+## 打包产物
+
+- `target/release/momoshell.exe` — 可执行文件
+- `target/release/bundle/msi/momoshell_*.msi` — 安装包
+- `target/release/bundle/nsis/momoshell_*-setup.exe` — 安装包
+
+## 工作区
+
+| 路径 | 职责 |
+|------|------|
+| `src/` | React 前端 (Vite) |
+| `crates/app` | Tauri 壳 + 命令胶水 |
+| `crates/protocol` | 共享 DTO |
+| `crates/store` | 本地 JSON 持久化 |
+| `crates/ssh-core` | SSH / SFTP / 隧道 / 多协议 |
 
 ## License
 
