@@ -140,6 +140,11 @@ pub(crate) fn humanize_message(raw: &str) -> String {
         return format!("SSH 协议错误：{raw}");
     }
 
+    // SFTP
+    if lower.contains("sftp") && lower.contains("failure") {
+        return "SFTP 操作失败。请检查文件路径与权限，以及远端磁盘空间。".into();
+    }
+
     // Local shell
     if lower.contains("无法启动本地终端") {
         return raw.to_string();

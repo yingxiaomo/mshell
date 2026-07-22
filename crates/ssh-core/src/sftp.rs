@@ -129,6 +129,14 @@ pub fn write_text(sftp: &Sftp, remote_path: &str, data: &[u8]) -> Result<(), Cor
     Ok(())
 }
 
+/// Change permissions on a remote file/directory (chmod mode).
+pub fn chmod(sftp: &Sftp, path: &str, mode: u32) -> Result<(), CoreError> {
+    let mut stat = sftp.stat(Path::new(path))?;
+    stat.perm = Some(mode);
+    sftp.setstat(Path::new(path), stat)?;
+    Ok(())
+}
+
 /// Result of a chunked transfer (for status event mapping).
 #[derive(Debug)]
 pub enum TransferOutcome {

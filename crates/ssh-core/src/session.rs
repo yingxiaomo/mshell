@@ -99,6 +99,12 @@ pub enum SessionCmd {
         to: String,
         reply: flume::Sender<Result<(), CoreError>>,
     },
+    /// Change remote file permissions (chmod).
+    SftpChmod {
+        path: String,
+        mode: u32,
+        reply: flume::Sender<Result<(), CoreError>>,
+    },
     /// Resolve remote path via SFTP realpath (e.g. `"."` → home).
     SftpRealpath {
         path: String,
@@ -572,6 +578,13 @@ fn connect_ssh(
         reply_rx
             .recv()
             .map_err(|_| CoreError::Other("sftp_realpath reply channel closed".into()))?
+    }
+
+    /// Change remote file permissions.
+    pub fn sftp_chmod(&self, session_id: Uuid, path: String, mode: u32) -> Result<(), CoreError> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.send(session_id, SessionCmd::SftpChmod { path, mode, reply: reply_tx })?;
+        reply_rx.recv().map_err(|_| CoreError::Other("reply channel closed".into()))?
     }
 
     /// Enqueue an upload on the session worker. Returns `transfer_id` immediately;
@@ -1400,6 +1413,13 @@ fn handle_cmd(
         SessionCmd::SftpRename { from, to, reply } => {
             sess.set_blocking(true);
             let result = ensure_sftp(sess, sftp).and_then(|s| sftp_ops::rename(s, &from, &to));
+            sess.set_blocking(false);
+            let _ = reply.send(result);
+            false
+        }
+        SessionCmd::SftpChmod { path, mode, reply } => {
+            sess.set_blocking(true);
+            let result = ensure_sftp(sess, sftp).and_then(|s| sftp_ops::chmod(s, &path, mode));
             sess.set_blocking(false);
             let _ = reply.send(result);
             false

@@ -151,3 +151,19 @@ pub fn sftp_write_text(
         .sftp_write(session_id, remote_path, data)
         .map_err(|e| e.to_string())
 }
+
+/// Change remote file permissions via SFTP.
+#[tauri::command]
+pub fn sftp_chmod(
+    state: State<'_, AppState>,
+    session_id: Uuid,
+    path: String,
+    mode: u32,
+) -> Result<(), String> {
+    state
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .sftp_chmod(session_id, path, mode)
+        .map_err(|e| e.to_string())
+}
