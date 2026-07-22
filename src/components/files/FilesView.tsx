@@ -59,6 +59,15 @@ export function FilesView() {
     null,
   );
   const [dragOver, setDragOver] = useState(false);
+  const [permOpen, setPermOpen] = useState(false);
+  const [permTarget, setPermTarget] = useState<{
+    name: string;
+    path: string;
+    isDir: boolean;
+  } | null>(null);
+  const [permMode, setPermMode] = useState(0o644);
+  const [permRecursive, setPermRecursive] = useState(false);
+  const [permSaving, setPermSaving] = useState(false);
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const activeRef = useRef(active);
   const cwdRef = useRef(cwd);
@@ -315,15 +324,11 @@ ${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` :
         }
         case "chmod": {
           if (!target || target === "blank") return;
-          const modeStr = window.prompt("输入权限数字（如 644、755）：", "644");
-          if (!modeStr) return;
-          const mode = parseInt(modeStr, 8);
-          if (isNaN(mode) || mode < 0 || mode > 0o777) {
-            window.alert("无效的权限值。请输入八进制数字，如 644、755。");
-            return;
-          }
-          await sftpChmod(sessionId, target.path, mode);
-          showToast("权限已修改", "success");
+          setPermTarget({ ...target, isDir: !!target.isDir });
+          // Build initial mode from a default (target entry doesn't carry mode)
+          setPermMode(0o644);
+          setPermRecursive(false);
+          setPermOpen(true);
           break;
         }
         case "delete": {
@@ -621,6 +626,29 @@ ${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` :
           void runAction(id);
         }}
       />
+      {permOpen && permTarget && (
+        <PermDialog
+          target={permTarget}
+          mode={permMode}
+          recursive={permRecursive}
+          saving={permSaving}
+          onModeChange={setPermMode}
+          onRecursiveChange={setPermRecursive}
+          onCancel={() => setPermOpen(false)}
+          onApply={async () => {
+            setPermSaving(true);
+            try {
+              await sftpChmod(active!.sessionId, permTarget.path, permMode);
+              showToast(`已修改 ${permTarget.name} 权限`, "success");
+              setPermOpen(false);
+            } catch (e) {
+              showToast(e instanceof Error ? e.message : String(e), "error");
+            } finally {
+              setPermSaving(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -629,6 +657,141 @@ function Header() {
   return (
     <div className="border-b border-zinc-800 px-4 py-3">
       <h1 className="text-sm font-semibold tracking-wide text-zinc-200">文件</h1>
+    </div>
+  );
+}
+
+/** Permission grid dialog — 3×3 checkboxes + octal readout. */
+type PermDialogProps = {
+  target: { name: string; path: string; isDir: boolean };
+  mode: number;
+  recursive: boolean;
+  saving: boolean;
+  onModeChange: (m: number) => void;
+  onRecursiveChange: (r: boolean) => void;
+  onCancel: () => void;
+  onApply: () => Promise<void>;
+};
+
+const PERM_LABELS = ["所有者", "组", "其他"];
+const PERM_BITS = [
+  [0o400, 0o200, 0o100],
+  [0o040, 0o020, 0o010],
+  [0o004, 0o002, 0o001],
+];
+const PERM_NAMES = ["读", "写", "执行"];
+
+function PermDialog({
+  target,
+  mode,
+  recursive,
+  saving,
+  onModeChange,
+  onRecursiveChange,
+  onCancel,
+  onApply,
+}: PermDialogProps) {
+  const toggle = (row: number, col: number) => {
+    onModeChange(mode ^ PERM_BITS[row]![col]!);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+      role="presentation"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-sm rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onCancel();
+        }}
+      >
+        <div className="border-b border-zinc-800 px-5 py-3">
+          <h2 className="text-base font-semibold text-zinc-100">修改权限</h2>
+          <p className="mt-0.5 truncate text-xs text-zinc-500" title={target.path}>
+            {target.name}
+          </p>
+        </div>
+
+        <div className="p-5">
+          {/* 3×3 grid */}
+          <div className="grid grid-cols-4 gap-2 text-xs">
+            <div />
+            {PERM_NAMES.map((n) => (
+              <div key={n} className="text-center font-medium text-zinc-400">
+                {n}
+              </div>
+            ))}
+            <div className="text-right text-zinc-500">八进制</div>
+
+            {PERM_LABELS.map((label, row) => (
+              <>
+                {PERM_BITS[row]!.map((bit, col) => (
+                  <label
+                    key={`${row}-${col}`}
+                    className="flex cursor-pointer items-center justify-center"
+                  >
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-sky-500"
+                      checked={!!(mode & bit)}
+                      onChange={() => toggle(row, col)}
+                    />
+                  </label>
+                ))}
+                <div className="text-right text-zinc-300">{label}</div>
+              </>
+            ))}
+          </div>
+
+          {/* Octal display */}
+          <div className="mt-4 flex items-center gap-3 rounded-md bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100">
+            <span>chmod</span>
+            <span className="text-sky-400">{mode.toString(8).padStart(3, "0")}</span>
+            <span className="truncate text-zinc-500" title={target.path}>
+              {target.name}
+            </span>
+          </div>
+
+          {/* Recursive checkbox for dirs */}
+          {target.isDir && (
+            <label className="mt-3 flex items-center gap-2 text-xs text-zinc-300">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-sky-500"
+                checked={recursive}
+                onChange={(e) => onRecursiveChange(e.target.checked)}
+              />
+              递归设置子目录（需要后端支持）
+            </label>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-zinc-800 px-5 py-3">
+          <button
+            type="button"
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            onClick={onCancel}
+            disabled={saving}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+            disabled={saving}
+            onClick={() => void onApply()}
+          >
+            {saving ? "修改中…" : "应用"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
