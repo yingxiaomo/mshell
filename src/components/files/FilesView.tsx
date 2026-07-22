@@ -281,6 +281,35 @@ ${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` :
     void refresh(active.sessionId, cwd);
   }
 
+  async function downloadSelected() {
+    if (!active) return;
+    const selected = entries.filter((e) => selection.has(e.path) && !e.isDir);
+    if (selected.length === 0) {
+      showToast("请选择要下载的文件", "info");
+      return;
+    }
+    const dir = await open({ directory: true });
+    if (!dir) return;
+    for (const entry of selected) {
+      const localPath = dir + "/" + entry.name;
+      try {
+        const transferId = await sftpDownload(active.sessionId, entry.path, localPath);
+        beginTransfer({
+          transferId,
+          direction: "download",
+          label: entry.name,
+          localPath,
+          remotePath: entry.path,
+          sessionId: active.sessionId,
+        });
+      } catch (e) {
+        showToast("下载失败 " + entry.name + ": " + (e instanceof Error ? e.message : String(e)), "error");
+      }
+    }
+    showToast("已开始下载 " + selected.length + " 个文件", "info");
+  }
+
+
   function openFile(entry: RemoteEntry) {
     if (!active) return;
     openEditor({
@@ -523,6 +552,13 @@ ${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` :
         {selection.size > 0 && (
           <div className="flex items-center gap-1.5 mr-1">
             <span className="text-[10px] text-sky-400">{selection.size}</span>
+            <button
+              type="button"
+              className="rounded px-1.5 py-0.5 text-[10px] text-sky-400 hover:bg-sky-400/20"
+              onClick={() => void downloadSelected()}
+            >
+              下载
+            </button>
             <button
               type="button"
               className="rounded px-1.5 py-0.5 text-[10px] text-red-400 hover:bg-red-950/30"
