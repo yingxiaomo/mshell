@@ -18,6 +18,7 @@ import {
   sftpMkdir,
   sftpRealpath,
   sftpRename,
+  sftpChmod,
   sftpRm,
   sftpUpload,
   sftpWriteText,
@@ -312,6 +313,19 @@ ${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` :
           await refresh(sessionId, cwd);
           break;
         }
+        case "chmod": {
+          if (!target || target === "blank") return;
+          const modeStr = window.prompt("输入权限数字（如 644、755）：", "644");
+          if (!modeStr) return;
+          const mode = parseInt(modeStr, 8);
+          if (isNaN(mode) || mode < 0 || mode > 0o777) {
+            window.alert("无效的权限值。请输入八进制数字，如 644、755。");
+            return;
+          }
+          await sftpChmod(sessionId, target.path, mode);
+          showToast("权限已修改", "success");
+          break;
+        }
         case "delete": {
           if (!target || target === "blank") return;
           const ok = window.confirm(
@@ -398,6 +412,7 @@ ${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` :
           { kind: "item", id: "copy-path", label: "复制路径" },
           { kind: "sep", id: "s1" },
           { kind: "item", id: "rename", label: "重命名" },
+          { kind: "item", id: "chmod", label: "权限…" },
           { kind: "item", id: "delete", label: "删除", danger: true },
         ]
       : [
@@ -406,6 +421,7 @@ ${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` :
           { kind: "item", id: "copy-path", label: "复制路径" },
           { kind: "sep", id: "s1" },
           { kind: "item", id: "rename", label: "重命名" },
+          { kind: "item", id: "chmod", label: "权限…" },
           { kind: "item", id: "delete", label: "删除", danger: true },
         ];
     setMenu({ x: e.clientX, y: e.clientY, items });
