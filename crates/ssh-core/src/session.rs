@@ -774,6 +774,7 @@ fn session_worker(
             // Drop hold after target session ends (stops relays / bastions).
             drop(hold);
             let _ = conn;
+            let _ = timeout;
             let _ = event_tx.send(SessionEvent::Disconnected {
                 session_id,
                 reason,
@@ -794,7 +795,7 @@ fn telnet_session_worker(
     ready_tx: flume::Sender<Result<(), CoreError>>,
     cmd_rx: flume::Receiver<SessionCmd>,
     event_tx: flume::Sender<SessionEvent>,
-    transfers: Arc<TransferQueue>,
+    _transfers: Arc<TransferQueue>,
 ) {
     match crate::telnet::TelnetSession::connect(&host, port, timeout) {
         Ok(mut telnet) => {
@@ -860,11 +861,11 @@ fn run_telnet_cmd_loop(
 #[allow(clippy::too_many_arguments)]
 fn local_session_worker(
     session_id: Uuid,
-    timeout: Duration,
+    _timeout: Duration,
     ready_tx: flume::Sender<Result<(), CoreError>>,
     cmd_rx: flume::Receiver<SessionCmd>,
     event_tx: flume::Sender<SessionEvent>,
-    transfers: Arc<TransferQueue>,
+    _transfers: Arc<TransferQueue>,
 ) {
     match crate::local::LocalSession::spawn(80, 24) {
         Ok(mut local) => {
@@ -936,7 +937,7 @@ fn serial_session_worker(
     ready_tx: flume::Sender<Result<(), CoreError>>,
     cmd_rx: flume::Receiver<SessionCmd>,
     event_tx: flume::Sender<SessionEvent>,
-    transfers: Arc<TransferQueue>,
+    _transfers: Arc<TransferQueue>,
 ) {
     match crate::serial::SerialSession::open(&config, timeout) {
         Ok(mut serial) => {

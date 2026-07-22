@@ -5,7 +5,6 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::Duration;
 
 use crate::error::CoreError;
 

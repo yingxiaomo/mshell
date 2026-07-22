@@ -29,14 +29,6 @@ const NOP: u8 = 241;
 const ECHO: u8 = 1;
 const SUPPRESS_GO_AHEAD: u8 = 3;
 const STATUS: u8 = 5;
-const TIMING_MARK: u8 = 6;
-const TERMINAL_TYPE: u8 = 24;
-const WINDOW_SIZE: u8 = 31;
-const TERMINAL_SPEED: u8 = 32;
-const REMOTE_FLOW_CTRL: u8 = 33;
-const LINEMODE: u8 = 34;
-const ENVIRON: u8 = 39;
-const NEW_ENVIRON: u8 = 39;
 
 /// Telnet-over-TCP session wrapper.
 pub struct TelnetSession {
