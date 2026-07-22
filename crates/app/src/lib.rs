@@ -95,6 +95,7 @@ pub fn run() {
             commands::sftp::transfer_cancel,
             commands::sftp::sftp_read_text,
             commands::sftp::sftp_write_text,
+            commands::sftp::sftp_chmod,
             commands::tunnel::tunnel_start,
             commands::tunnel::tunnel_stop,
             commands::tunnel::tunnel_list,

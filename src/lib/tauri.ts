@@ -157,6 +157,10 @@ export function sftpReadText(sessionId: string, remotePath: string) {
   return invoke<string>("sftp_read_text", { sessionId, remotePath });
 }
 
+export function sftpChmod(sessionId: string, path: string, mode: number) {
+  return invoke<void>("sftp_chmod", { sessionId, path, mode });
+}
+
 export function sftpWriteText(sessionId: string, remotePath: string, contentB64: string) {
   return invoke<void>("sftp_write_text", { sessionId, remotePath, contentB64 });
 }
