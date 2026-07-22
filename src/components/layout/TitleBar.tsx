@@ -83,7 +83,7 @@ export function TitleBar() {
         data-tauri-drag-region
       >
         <span className="text-xs font-semibold tracking-wide text-zinc-300">
-          momoshell
+          mshell
         </span>
         <span className="text-[10px] text-zinc-600">SSH</span>
       </div>

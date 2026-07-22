@@ -1,4 +1,4 @@
-# momoshell
+# mshell
 
 轻量 Windows SSH 客户端 — Tauri 2 + React + Rust。
 
@@ -37,7 +37,7 @@ npm run tauri dev        # 热更新开发
 scripts/build.sh         # 构建 + 测试
 npm run tauri build      # 打包 MSI / NSIS
 npm test                 # 前端测试
-cargo test -p momoshell  # Rust 测试
+cargo test -p mshell  # Rust 测试
 ```
 
 ## 快捷键
@@ -53,9 +53,9 @@ cargo test -p momoshell  # Rust 测试
 
 ## 打包产物
 
-- `target/release/momoshell.exe` — 可执行文件
-- `target/release/bundle/msi/momoshell_*.msi` — 安装包
-- `target/release/bundle/nsis/momoshell_*-setup.exe` — 安装包
+- `target/release/mshell.exe` — 可执行文件
+- `target/release/bundle/msi/mshell_*.msi` — 安装包
+- `target/release/bundle/nsis/mshell_*-setup.exe` — 安装包
 
 ## 工作区
 

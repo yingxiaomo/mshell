@@ -1,5 +1,5 @@
 {
-  "name": "momoshell",
+  "name": "mshell",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -46,6 +46,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4",
+    "sharp": "^0.35.3",
     "tailwindcss": "^4",
     "typescript": "^5.7",
     "vite": "^6",
