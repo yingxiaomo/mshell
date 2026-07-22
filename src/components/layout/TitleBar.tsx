@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
+import { Minus, Square, X } from "lucide-react";
 import { getCurrentWindow, type Window } from "@tauri-apps/api/window";
 
 function tryCurrentWindow(): Window | null {
@@ -93,7 +94,7 @@ export function TitleBar() {
           onClick={minimize}
           className="flex h-full w-11 items-center justify-center text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
         >
-          <span className="text-sm leading-none">─</span>
+          <Minus className="h-3.5 w-3.5" />
         </button>
         <button
           type="button"
@@ -101,7 +102,14 @@ export function TitleBar() {
           onClick={toggleMaximize}
           className="flex h-full w-11 items-center justify-center text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
         >
-          <span className="text-[10px] leading-none">{maximized ? "❐" : "□"}</span>
+          {maximized ? (
+            <span className="relative inline-flex h-3.5 w-3.5 items-center justify-center">
+              <Square className="absolute bottom-0 right-0 h-[11px] w-[11px]" strokeWidth={1.5} />
+              <Square className="absolute left-0 top-0 h-[11px] w-[11px]" strokeWidth={1.5} />
+            </span>
+          ) : (
+            <Square className="h-3.5 w-3.5" strokeWidth={1.5} />
+          )}
         </button>
         <button
           type="button"
@@ -109,7 +117,7 @@ export function TitleBar() {
           onClick={close}
           className="flex h-full w-11 items-center justify-center text-zinc-400 hover:bg-red-600 hover:text-white"
         >
-          <span className="text-sm leading-none">×</span>
+          <X className="h-3.5 w-3.5" />
         </button>
       </div>
     </header>
