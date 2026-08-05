@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/protocol", "crates/store", "crates/ssh-core", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+
+[patch.crates-io]
+# Patched libssh2-sys with HAVE_EC / HAVE_ED25519 / HAVE_EVP_PKEY_ED25519
+# on Windows MSVC + OpenSSL backend.
+libssh2-sys = { path = ".patched-libssh2-sys" }

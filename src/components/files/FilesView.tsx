@@ -1,0 +1,870 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import {
+  ArrowLeft,
+  FilePlus,
+  FolderPlus,
+  RefreshCw,
+  Upload,
+} from "lucide-react";
+import type { RemoteEntry } from "../../types/protocol";
+import { useSessionsStore } from "../../stores/sessions";
+import { useUiStore } from "../../stores/ui";
+import { pathBasename, useTransfersStore } from "../../stores/transfers";
+import { cmd, commands } from "../../lib/commands";
+import { showToast } from "../ui/Toast";
+import {
+  ContextMenu,
+  type ContextMenuItem,
+  type ContextMenuState,
+} from "../ui/ContextMenu";
+import { bus } from "../../lib/events/bus";
+
+function joinRemote(cwd: string, name: string): string {
+  if (!cwd || cwd === "/") return `/${name}`.replace(/\/+/g, "/");
+  return `${cwd.replace(/\/+$/, "")}/${name}`;
+}
+
+function basename(path: string): string {
+  return pathBasename(path);
+}
+
+export function FilesView() {
+  const tabs = useSessionsStore((s) => s.tabs);
+  const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+  const openEditor = useUiStore((s) => s.openEditor);
+  const beginTransfer = useTransfersStore((s) => s.begin);
+  const active = useMemo(
+    () => tabs.find((t) => t.sessionId === activeSessionId) ?? null,
+    [tabs, activeSessionId],
+  );
+
+  const [entries, setEntries] = useState<RemoteEntry[]>([]);
+  const [cwd, setCwd] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const [menuTarget, setMenuTarget] = useState<RemoteEntry | "blank" | null>(
+    null,
+  );
+  const [dragOver, setDragOver] = useState(false);
+  const [permOpen, setPermOpen] = useState(false);
+  const [permTarget, setPermTarget] = useState<{
+    name: string;
+    path: string;
+    isDir: boolean;
+  } | null>(null);
+  const [permMode, setPermMode] = useState(0o644);
+  const [permRecursive, setPermRecursive] = useState(false);
+  const [permSaving, setPermSaving] = useState(false);
+  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const activeRef = useRef(active);
+  const cwdRef = useRef(cwd);
+  activeRef.current = active;
+  cwdRef.current = cwd;
+
+  const refresh = useCallback(async (sessionId: string, dir: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const dirPath = dir || ".";
+      // Only canonicalize relative paths (e.g. "." → home). Absolute paths from
+      // directory listings and "go up" are already canonical, so skipping
+      // realpath avoids a needless round trip — and sidesteps servers whose SFTP
+      // realpath is flaky (was breaking "go up" with a SYMLINK/READLINK error).
+      let resolved = dirPath;
+      if (!dirPath.startsWith("/")) {
+        try {
+          resolved = await cmd(commands.sftpRealpath, { sessionId, path: dirPath });
+        } catch {
+          resolved = dirPath; // realpath unsupported/flaky — use the path as-is
+        }
+      }
+      setCwd(resolved);
+      const list = await cmd(commands.sftpList, { sessionId, path: resolved });
+      list.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      setEntries(list);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!active || active.disconnected || active.connecting) {
+      setEntries([]);
+      setCwd("");
+      return;
+    }
+    void refresh(active.sessionId, cwd || ".");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.sessionId, active?.disconnected]);
+
+  const enqueueUploads = useCallback(
+    async (sessionId: string, remoteDir: string, localPaths: string[]) => {
+      let ok = 0;
+      for (const localPath of localPaths) {
+        const name = basename(localPath);
+        if (!name || name === "." || name === "..") continue;
+        const remotePath = joinRemote(remoteDir, name);
+        try {
+          const transferId = await cmd(commands.sftpUpload, { sessionId, localPath, remotePath });
+          beginTransfer({
+            transferId,
+            direction: "upload",
+            label: name,
+            localPath,
+            remotePath,
+            sessionId,
+          });
+          ok += 1;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setError(`上传失败 ${name}: ${msg}`);
+          showToast(`上传失败 ${name}: ${msg}`, "error");
+        }
+      }
+      if (ok > 0) {
+        showToast(`已开始上传 ${ok} 个文件`, "info");
+      }
+    },
+    [beginTransfer],
+  );
+
+  // When transfers for this session finish, refresh once (debounce multi-file batch).
+  useEffect(() => {
+    let cancelled = false;
+    let refreshTimer: number | undefined;
+    let toastTimer: number | undefined;
+    let pendingDone = 0;
+    let pendingFail = 0;
+    let lastFailMsg = "";
+
+    const flush = () => {
+      const session = activeRef.current;
+      if (!session || session.disconnected) {
+        pendingDone = 0;
+        pendingFail = 0;
+        return;
+      }
+      void refresh(session.sessionId, cwdRef.current || "/");
+      if (pendingDone > 0 && pendingFail === 0) {
+        showToast(
+          pendingDone === 1
+            ? "传输完成，已刷新文件列表"
+            : `${pendingDone} 个传输完成，已刷新`,
+          "success",
+        );
+      } else if (pendingFail > 0) {
+        showToast(
+          pendingFail === 1
+            ? lastFailMsg || "传输失败"
+            : `${pendingFail} 个传输失败`,
+          "error",
+        );
+      }
+      pendingDone = 0;
+      pendingFail = 0;
+      lastFailMsg = "";
+    };
+
+    const unsub = bus.on("transfer-progress", (ev) => {
+      if (cancelled) return;
+      const st = String(ev.status);
+      if (st !== "done" && st !== "failed" && st !== "cancelled") return;
+      const session = activeRef.current;
+      if (!session || session.disconnected) return;
+      if (ev.sessionId && ev.sessionId !== session.sessionId) return;
+
+      if (st === "done") pendingDone += 1;
+      else if (st === "failed") {
+        pendingFail += 1;
+        if (ev.error) lastFailMsg = ev.error;
+      }
+
+      window.clearTimeout(refreshTimer);
+      window.clearTimeout(toastTimer);
+      // Batch multi-file completions into one refresh + toast.
+      refreshTimer = window.setTimeout(flush, 400);
+    });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(refreshTimer);
+      window.clearTimeout(toastTimer);
+      unsub();
+    };
+  }, [refresh]);
+  // Tauri native file drag-drop (desktop absolute paths).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (cancelled) return;
+        const session = activeRef.current;
+        if (!session || session.disconnected) {
+          setDragOver(false);
+          return;
+        }
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setDragOver(true);
+          return;
+        }
+        if (payload.type === "leave") {
+          setDragOver(false);
+          return;
+        }
+        if (payload.type === "drop") {
+          setDragOver(false);
+          const paths = payload.paths ?? [];
+          if (paths.length === 0) return;
+          void enqueueUploads(session.sessionId, cwdRef.current || "/", paths);
+        }
+      })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {
+        /* browser preview */
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [enqueueUploads]);
+
+  function navTo(dir: string) {
+    if (!active) return;
+    setSelection(new Set());
+    void refresh(active.sessionId, dir);
+  }
+
+  function toggleSelection(path: string) {
+    setSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
+
+  function selectAll() {
+    if (selection.size === entries.length) {
+      setSelection(new Set());
+    } else {
+      setSelection(new Set(entries.map((e) => e.path)));
+    }
+  }
+
+  async function deleteSelected() {
+    const names = entries.filter((e) => selection.has(e.path)).map((e) => e.name);
+    if (names.length === 0) return;
+    if (!window.confirm(`确定删除 ${names.length} 个文件？
+${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` : ''}`)) return;
+    if (!active) return;
+    for (const path of selection) {
+      try { await cmd(commands.sftpRm, { sessionId: active.sessionId, path }); }
+      catch (e) { showToast(`删除失败: ${e instanceof Error ? e.message : e}`, 'error'); }
+    }
+    setSelection(new Set());
+    void refresh(active.sessionId, cwd);
+  }
+
+  async function downloadSelected() {
+    if (!active) return;
+    const selected = entries.filter((e) => selection.has(e.path) && !e.isDir);
+    if (selected.length === 0) {
+      showToast("请选择要下载的文件", "info");
+      return;
+    }
+    const dir = await open({ directory: true });
+    if (!dir) return;
+    for (const entry of selected) {
+      const localPath = dir + "/" + entry.name;
+      try {
+        const transferId = await cmd(commands.sftpDownload, { sessionId: active.sessionId, remotePath: entry.path, localPath });
+        beginTransfer({
+          transferId,
+          direction: "download",
+          label: entry.name,
+          localPath,
+          remotePath: entry.path,
+          sessionId: active.sessionId,
+        });
+      } catch (e) {
+        showToast("下载失败 " + entry.name + ": " + (e instanceof Error ? e.message : String(e)), "error");
+      }
+    }
+    showToast("已开始下载 " + selected.length + " 个文件", "info");
+  }
+
+
+  function openFile(entry: RemoteEntry) {
+    if (!active) return;
+    openEditor({
+      sessionId: active.sessionId,
+      remotePath: entry.path,
+      name: entry.name,
+    });
+  }
+
+  async function runAction(id: string) {
+    if (!active) return;
+    const sessionId = active.sessionId;
+    const target = menuTarget;
+
+    try {
+      switch (id) {
+        case "open": {
+          if (!target || target === "blank") return;
+          if (target.isDir) navTo(target.path);
+          else openFile(target);
+          break;
+        }
+        case "copy-path": {
+          if (!target || target === "blank") return;
+          await navigator.clipboard.writeText(target.path);
+          break;
+        }
+        case "rename": {
+          if (!target || target === "blank") return;
+          const next = window.prompt("新名称：", target.name);
+          if (!next || next === target.name) return;
+          if (next.includes("/") || next.includes("\\")) {
+            showToast("名称不能包含路径分隔符", "error");
+            return;
+          }
+          const parent = target.path.replace(/\/[^/]+\/?$/, "") || "/";
+          const to = joinRemote(parent === target.path ? cwd : parent, next);
+          await cmd(commands.sftpRename, { sessionId, from: target.path, to });
+          await refresh(sessionId, cwd);
+          break;
+        }
+        case "chmod": {
+          if (!target || target === "blank") return;
+          setPermTarget({ ...target, isDir: !!target.isDir });
+          // Start from the file's actual mode when the server reported it,
+          // else a sensible default.
+          setPermMode(
+            typeof target.mode === "number"
+              ? target.mode & 0o777
+              : target.isDir ? 0o755 : 0o644,
+          );
+          setPermRecursive(false);
+          setPermOpen(true);
+          break;
+        }
+        case "delete": {
+          if (!target || target === "blank") return;
+          const ok = window.confirm(
+            target.isDir
+              ? `确定删除目录「${target.name}」？\n（需为空目录，或后端支持递归）`
+              : `确定删除「${target.name}」？`,
+          );
+          if (!ok) return;
+          await cmd(commands.sftpRm, { sessionId, path: target.path });
+          await refresh(sessionId, cwd);
+          break;
+        }
+        case "mkdir": {
+          const name = window.prompt("新建文件夹名称：");
+          if (!name?.trim()) return;
+          const path = joinRemote(cwd, name.trim());
+          await cmd(commands.sftpMkdir, { sessionId, path });
+          await refresh(sessionId, cwd);
+          break;
+        }
+        case "new-file": {
+          const name = window.prompt("新建文件名称：");
+          if (!name?.trim()) return;
+          const path = joinRemote(cwd, name.trim());
+          await cmd(commands.sftpWriteText, { sessionId, remotePath: path, contentB64: btoa("") });
+          await refresh(sessionId, cwd);
+          openEditor({
+            sessionId,
+            remotePath: path,
+            name: name.trim(),
+          });
+          break;
+        }
+        case "upload": {
+          const selected = await open({
+            multiple: true,
+            directory: false,
+            title: "选择要上传的文件",
+          });
+          if (!selected) return;
+          const files = Array.isArray(selected) ? selected : [selected];
+          await enqueueUploads(sessionId, cwd, files);
+          break;
+        }
+        case "upload-dir": {
+          // A folder is uploaded recursively by the backend.
+          const dir = await open({ directory: true, multiple: false, title: "选择要上传的文件夹" });
+          if (!dir) return;
+          await enqueueUploads(sessionId, cwd, [dir as string]);
+          break;
+        }
+        case "download": {
+          if (!target || target === "blank") return;
+          if (target.isDir) {
+            // Download a folder recursively: pick a local parent directory.
+            const parent = await open({ directory: true, title: "下载文件夹到…" });
+            if (!parent) return;
+            const localPath = parent + "/" + target.name;
+            const transferId = await cmd(commands.sftpDownload, { sessionId, remotePath: target.path, localPath });
+            beginTransfer({
+              transferId,
+              direction: "download",
+              label: target.name,
+              localPath,
+              remotePath: target.path,
+              sessionId,
+            });
+            break;
+          }
+          const localPath = await save({
+            title: "下载到…",
+            defaultPath: target.name,
+          });
+          if (!localPath) return;
+          const transferId = await cmd(commands.sftpDownload, { sessionId, remotePath: target.path, localPath });
+          beginTransfer({
+            transferId,
+            direction: "download",
+            label: target.name,
+            localPath,
+            remotePath: target.path,
+            sessionId,
+          });
+          break;
+        }
+        default:
+          break;
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      showToast(msg, "error");
+    }
+  }
+
+  function openEntryMenu(e: React.MouseEvent, entry: RemoteEntry) {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenuTarget(entry);
+    const items: ContextMenuItem[] = entry.isDir
+      ? [
+          { kind: "item", id: "open", label: "打开" },
+          { kind: "item", id: "download", label: "下载文件夹…" },
+          { kind: "item", id: "copy-path", label: "复制路径" },
+          { kind: "sep", id: "s1" },
+          { kind: "item", id: "rename", label: "重命名" },
+          { kind: "item", id: "chmod", label: "权限…" },
+          { kind: "item", id: "delete", label: "删除", danger: true },
+        ]
+      : [
+          { kind: "item", id: "open", label: "打开" },
+          { kind: "item", id: "download", label: "下载…" },
+          { kind: "item", id: "copy-path", label: "复制路径" },
+          { kind: "sep", id: "s1" },
+          { kind: "item", id: "rename", label: "重命名" },
+          { kind: "item", id: "chmod", label: "权限…" },
+          { kind: "item", id: "delete", label: "删除", danger: true },
+        ];
+    setMenu({ x: e.clientX, y: e.clientY, items });
+  }
+
+  function openBlankMenu(e: React.MouseEvent) {
+    e.preventDefault();
+    setMenuTarget("blank");
+    setMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { kind: "item", id: "upload", label: "上传文件…" },
+        { kind: "item", id: "upload-dir", label: "上传文件夹…" },
+        { kind: "item", id: "new-file", label: "新建文件…" },
+        { kind: "item", id: "mkdir", label: "新建文件夹…" },
+        { kind: "sep", id: "s1" },
+        {
+          kind: "item",
+          id: "copy-path",
+          label: "复制当前路径",
+          disabled: !cwd,
+        },
+      ],
+    });
+  }
+
+  if (!active) {
+    return (
+      <div className="flex h-full flex-col">
+        <Header />
+        <div className="flex flex-1 items-center justify-center p-4">
+          <p className="text-center text-sm text-zinc-500">
+            打开会话后可浏览远程文件
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (active.disconnected) {
+    return (
+      <div className="flex h-full flex-col">
+        <Header />
+        <div className="flex flex-1 items-center justify-center p-4">
+          <p className="text-amber-500/90 text-sm">会话已断开</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <Header />
+      <div className="flex items-center gap-1 border-b border-zinc-800 px-2 py-1">
+        <button
+          type="button"
+          className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+          onClick={() => {
+            const parts = cwd.split("/");
+            parts.pop();
+            navTo(parts.join("/") || "/");
+          }}
+          title="上级目录"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+        </button>
+        <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-400">
+          {cwd || "/"}
+        </span>
+        <button
+          type="button"
+          className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+          title="上传"
+          onClick={() => void runAction("upload")}
+        >
+          <Upload className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+          title="新建文件"
+          onClick={() => void runAction("new-file")}
+        >
+          <FilePlus className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+          title="新建文件夹"
+          onClick={() => void runAction("mkdir")}
+        >
+          <FolderPlus className="h-3.5 w-3.5" />
+        </button>
+        {selection.size > 0 && (
+          <div className="flex items-center gap-1.5 mr-1">
+            <span className="text-[10px] text-sky-400">{selection.size}</span>
+            <button
+              type="button"
+              className="rounded px-1.5 py-0.5 text-[10px] text-sky-400 hover:bg-sky-400/20"
+              onClick={() => void downloadSelected()}
+            >
+              下载
+            </button>
+            <button
+              type="button"
+              className="rounded px-1.5 py-0.5 text-[10px] text-red-400 hover:bg-red-950/30"
+              onClick={() => void deleteSelected()}
+            >
+              删除
+            </button>
+          </div>
+        )}
+        <button
+          type="button"
+          className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+          onClick={() => selectAll()}
+          title={selection.size === entries.length ? "取消全选" : "全选"}
+        >
+          <span className="text-[13px]">{selection.size === entries.length ? "☑" : "☐"}</span>
+        </button>
+        <button
+          type="button"
+          className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+          onClick={() => navTo(cwd)}
+          title="刷新"
+        >
+          <RefreshCw className="h-3 w-3" />
+        </button>
+      </div>
+      {error && (
+        <p className="border-b border-red-900/40 bg-red-950/30 px-3 py-1 text-xs text-red-300">
+          {error}
+        </p>
+      )}
+      <div
+        className={
+          dragOver
+            ? "relative flex-1 overflow-auto bg-sky-600/10 ring-2 ring-inset ring-sky-500"
+            : "relative flex-1 overflow-auto"
+        }
+        onContextMenu={openBlankMenu}
+      >
+        {dragOver && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+            <div className="rounded-lg border border-dashed border-sky-500 bg-zinc-900/90 px-4 py-3 text-sm text-sky-300 shadow-lg">
+              松开以上传到 {cwd || "/"}
+            </div>
+          </div>
+        )}
+        {loading && entries.length === 0 && (
+          <p className="p-3 text-xs text-zinc-500">加载中…</p>
+        )}
+        {!loading && entries.length === 0 && (
+          <p className="p-3 text-xs text-zinc-600">
+            空目录 — 右键或拖入文件可上传
+          </p>
+        )}
+        {entries.map((entry) => (
+          <div
+            key={entry.path}
+            className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-800/50"
+            style={{ backgroundColor: selection.has(entry.path) ? 'rgba(14,165,233,0.1)' : undefined }}
+            onDoubleClick={() => {
+              if (entry.isDir) navTo(entry.path);
+              else openFile(entry);
+            }}
+            onContextMenu={(e) => openEntryMenu(e, entry)}
+          >
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 shrink-0 accent-sky-500"
+              checked={selection.has(entry.path)}
+              onChange={() => toggleSelection(entry.path)}
+              onClick={(e) => e.stopPropagation()}
+            />
+            <span className="shrink-0 text-zinc-500">
+              {entry.isDir ? "📁" : "📄"}
+            </span>
+            <span className="truncate text-zinc-200">{entry.name}</span>
+            <span className="ml-auto flex shrink-0 items-center gap-2 text-[10px] text-zinc-600">
+              {typeof entry.mode === "number" && (
+                <span className="font-mono" title="权限">
+                  {(entry.mode & 0o777).toString(8).padStart(3, "0")}
+                </span>
+              )}
+              {!entry.isDir && (
+                <span>
+                  {entry.size > 1024 * 1024
+                    ? `${(entry.size / 1024 / 1024).toFixed(1)} MB`
+                    : entry.size > 1024
+                      ? `${(entry.size / 1024).toFixed(1)} KB`
+                      : `${entry.size} B`}
+                </span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <ContextMenu
+        menu={menu}
+        onClose={() => {
+          setMenu(null);
+          setMenuTarget(null);
+        }}
+        onSelect={(id) => {
+          if (id === "copy-path" && menuTarget === "blank" && cwd) {
+            void navigator.clipboard.writeText(cwd);
+            return;
+          }
+          void runAction(id);
+        }}
+      />
+      {permOpen && permTarget && (
+        <PermDialog
+          target={permTarget}
+          mode={permMode}
+          recursive={permRecursive}
+          saving={permSaving}
+          onModeChange={setPermMode}
+          onRecursiveChange={setPermRecursive}
+          onCancel={() => setPermOpen(false)}
+          onApply={async () => {
+            setPermSaving(true);
+            const sid = active!.sessionId;
+            try {
+              if (permRecursive && permTarget.isDir) {
+                // SFTP setstat isn't recursive — do it through the shell.
+                const octal = (permMode & 0o777).toString(8);
+                const safe = permTarget.path.replace(/'/g, "'\\''");
+                await cmd(commands.sessionExec, { sessionId: sid, command: `chmod -R ${octal} '${safe}'` });
+              } else {
+                await cmd(commands.sftpChmod, { sessionId: sid, path: permTarget.path, mode: permMode });
+              }
+              showToast(`已修改 ${permTarget.name} 权限`, "success");
+              setPermOpen(false);
+              void refresh(sid, cwd); // reflect the new mode in the listing
+            } catch (e) {
+              showToast(e instanceof Error ? e.message : String(e), "error");
+            } finally {
+              setPermSaving(false);
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Header() {
+  return (
+    <div className="border-b border-zinc-800 px-4 py-3">
+      <h1 className="text-sm font-semibold tracking-wide text-zinc-200">文件</h1>
+    </div>
+  );
+}
+
+/** Permission grid dialog — 3×3 checkboxes + octal readout. */
+type PermDialogProps = {
+  target: { name: string; path: string; isDir: boolean };
+  mode: number;
+  recursive: boolean;
+  saving: boolean;
+  onModeChange: (m: number) => void;
+  onRecursiveChange: (r: boolean) => void;
+  onCancel: () => void;
+  onApply: () => Promise<void>;
+};
+
+const PERM_LABELS = ["所有者", "组", "其他"];
+const PERM_BITS = [
+  [0o400, 0o200, 0o100],
+  [0o040, 0o020, 0o010],
+  [0o004, 0o002, 0o001],
+];
+const PERM_NAMES = ["读", "写", "执行"];
+
+function PermDialog({
+  target,
+  mode,
+  recursive,
+  saving,
+  onModeChange,
+  onRecursiveChange,
+  onCancel,
+  onApply,
+}: PermDialogProps) {
+  const toggle = (row: number, col: number) => {
+    onModeChange(mode ^ PERM_BITS[row]![col]!);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+      role="presentation"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-sm rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onCancel();
+        }}
+      >
+        <div className="border-b border-zinc-800 px-5 py-3">
+          <h2 className="text-base font-semibold text-zinc-100">修改权限</h2>
+          <p className="mt-0.5 truncate text-xs text-zinc-500" title={target.path}>
+            {target.name}
+          </p>
+        </div>
+
+        <div className="p-5">
+          {/* 3×3 grid */}
+          <div className="grid grid-cols-4 gap-2 text-xs">
+            <div />
+            {PERM_NAMES.map((n) => (
+              <div key={n} className="text-center font-medium text-zinc-400">
+                {n}
+              </div>
+            ))}
+            <div className="text-right text-zinc-500">八进制</div>
+
+            {PERM_LABELS.map((label, row) => (
+              <>
+                {PERM_BITS[row]!.map((bit, col) => (
+                  <label
+                    key={`${row}-${col}`}
+                    className="flex cursor-pointer items-center justify-center"
+                  >
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-sky-500"
+                      checked={!!(mode & bit)}
+                      onChange={() => toggle(row, col)}
+                    />
+                  </label>
+                ))}
+                <div className="text-right text-zinc-300">{label}</div>
+              </>
+            ))}
+          </div>
+
+          {/* Octal display */}
+          <div className="mt-4 flex items-center gap-3 rounded-md bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100">
+            <span>chmod</span>
+            <span className="text-sky-400">{mode.toString(8).padStart(3, "0")}</span>
+            <span className="truncate text-zinc-500" title={target.path}>
+              {target.name}
+            </span>
+          </div>
+
+          {/* Recursive checkbox for dirs */}
+          {target.isDir && (
+            <label className="mt-3 flex items-center gap-2 text-xs text-zinc-300">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-sky-500"
+                checked={recursive}
+                onChange={(e) => onRecursiveChange(e.target.checked)}
+              />
+              递归设置子目录（需要后端支持）
+            </label>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-zinc-800 px-5 py-3">
+          <button
+            type="button"
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            onClick={onCancel}
+            disabled={saving}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+            disabled={saving}
+            onClick={() => void onApply()}
+          >
+            {saving ? "修改中…" : "应用"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

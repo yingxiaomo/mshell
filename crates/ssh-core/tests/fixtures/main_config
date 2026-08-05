@@ -1,0 +1,28 @@
+# Sample multi-host config for momoshell parser tests
+Host *
+    ServerAliveInterval 60
+
+Host web1
+    HostName 10.0.0.10
+    User deploy
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+
+Host bastion prod-db
+    HostName bastion.example.com
+    User admin
+    IdentityFile ~/.ssh/id_rsa
+    CertificateFile ~/.ssh/id_rsa-cert.pub
+    ForwardAgent yes
+
+Host jump-target
+    HostName 10.0.0.99
+    User root
+    Port 22
+    ProxyJump bastion
+
+Include includes/extra.conf
+
+Host only-wild
+    HostName nowhere.example
+    User nobody

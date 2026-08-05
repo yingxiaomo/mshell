@@ -1,0 +1,25 @@
+* text=auto eol=lf
+
+# Rust
+*.rs text diff=rust
+*.toml text
+*.lock text
+
+# Frontend
+*.ts text diff=typescript
+*.tsx text
+*.css text
+*.json text
+*.html text
+
+# Windows-specific
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.pdb binary

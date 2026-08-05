@@ -1,0 +1,6 @@
+# MSVC linker path (lld-link may not be installed)
+[target.x86_64-pc-windows-msvc]
+linker = "link.exe"
+
+[env]
+PERL = "C:/Strawberry/perl/bin/perl.exe"
