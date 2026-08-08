@@ -19,6 +19,7 @@ export function BatchView() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<BatchResult[]>([]);
   const [running, setRunning] = useState(false);
+  const runningRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // 默认选中所有活跃会话
@@ -42,9 +43,11 @@ export function BatchView() {
   const execute = useCallback(async () => {
     const cmdText = query.trim();
     if (!cmdText) return;
+    if (runningRef.current) return;
     const targets = activeSessions.filter((t) => selected.has(t.sessionId));
     if (targets.length === 0) { showToast("请至少选择一个会话", "info"); return; }
 
+    runningRef.current = true;
     setRunning(true);
     setResults(targets.map((t) => ({
       sessionId: t.sessionId,
@@ -73,6 +76,7 @@ export function BatchView() {
         ));
       }
     }
+    runningRef.current = false;
     setRunning(false);
   }, [query, selected, activeSessions]);
 

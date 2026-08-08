@@ -12,6 +12,8 @@ type HostEntry = {
 export function SshConfigView() {
   const [raw, setRaw] = useState("");
   const [hosts, setHosts] = useState<HostEntry[]>([]);
+  // Host 块之外的内容（文件头注释、Include、全局选项等），保存时原样保留，避免丢配置
+  const [preamble, setPreamble] = useState("");
   const [loading, setLoading] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState("");
@@ -20,23 +22,24 @@ export function SshConfigView() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const parseHosts = useCallback((text: string) => {
-    // Split by Host lines
+    // Split by Host lines；保留 Host 块之前的内容（注释/Include/全局项）
     const result: HostEntry[] = [];
     const lines = text.split("\n");
+    let pre: string[] = [];
     let current: HostEntry | null = null;
     for (const line of lines) {
-      if (/^Host\s/i.test(line) && current) {
-        result.push(current);
-        current = null;
-      }
-      if (/^Host\s/i.test(line)) {
-        const name = line.replace(/^Host\s+/i, "").trim();
+      if (/^\s*Host\s/i.test(line)) {
+        if (current) result.push(current);
+        const name = line.replace(/^\s*Host\s+/i, "").trim();
         current = { name, lines: [line] };
       } else if (current) {
         current.lines.push(line);
+      } else {
+        pre.push(line);
       }
     }
     if (current) result.push(current);
+    setPreamble(pre.join("\n"));
     return result;
   }, []);
 
@@ -54,10 +57,12 @@ export function SshConfigView() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // Generate text from hosts back to config format
+  // Generate text from hosts + preamble back to config format
   const generate = useCallback(() => {
-    return hosts.map((h) => h.lines.join("\n")).join("\n\n");
-  }, [hosts]);
+    const body = hosts.map((h) => h.lines.join("\n")).join("\n\n");
+    if (!preamble.trim()) return body;
+    return `${preamble}\n\n${body}`;
+  }, [hosts, preamble]);
 
   const save = useCallback(async () => {
     setSaving(true);
@@ -94,7 +99,10 @@ export function SshConfigView() {
         h.lines[0] = `Host ${value}`;
       } else {
         const existingIdx = h.lines.findIndex((l) => l.trim().toLowerCase().startsWith(key.toLowerCase()));
-        if (existingIdx >= 0) {
+        if (value.trim() === "") {
+          // 清空字段 → 删除对应行，避免残留空配置
+          if (existingIdx >= 0) h.lines.splice(existingIdx, 1);
+        } else if (existingIdx >= 0) {
           h.lines[existingIdx] = h.lines[existingIdx].replace(/^(\s*\S+\s+).*$/, `$1${value}`);
         } else {
           h.lines.push(`    ${key} ${value}`);

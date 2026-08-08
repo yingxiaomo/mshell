@@ -173,22 +173,29 @@ export function MonitorView() {
           "echo '===CPUSTAT==='; head -1 /proc/stat;" +
           "echo '===PROCS==='; ps -eo pid,pcpu,pmem,comm --sort=-pcpu 2>/dev/null | head -n 11",
       }).catch((e) => {
-        // 会话 worker 已死 → 标记断开，停止轮询
+        // 保存错误信息，但不在 catch 里立即标记断开（可能已经切了会话）
         const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes("reply channel closed") || msg.includes("session worker") || msg.includes("session not found")) {
-          useSessionsStore.getState().markDisconnected(active.sessionId, "会话已断开（监控检测）");
-        }
-        return "";
+        return { error: msg };
       });
 
       if (isStale()) return;
 
+      // 只有确认会话消失（而非切换/瞬时错误）才标记断开
+      if (combined && typeof combined === "object" && "error" in combined) {
+        const msg = (combined as { error: string }).error;
+        if (msg.includes("session not found") || msg.includes("reply channel closed")) {
+          useSessionsStore.getState().markDisconnected(active.sessionId, "会话已断开（监控检测）");
+        }
+        return;
+      }
+      const output = typeof combined === "string" ? combined : "";
+
       const part = (marker: string) => {
-        const idx = combined.indexOf(marker);
+        const idx = output.indexOf(marker);
         if (idx < 0) return "";
         const start = idx + marker.length;
-        const end = combined.indexOf("===", start);
-        return (end < 0 ? combined.slice(start) : combined.slice(start, end)).trim();
+        const end = output.indexOf("===", start);
+        return (end < 0 ? output.slice(start) : output.slice(start, end)).trim();
       };
 
       const loadStr = part("===LOADAVG===");

@@ -50,9 +50,15 @@ export function TransferBar() {
     [items],
   );
   const [expanded, setExpanded] = useState(false);
+  const manualExpandRef = useRef(false);
   // Track bytes at each tick for speed calculation
   const prevBytesRef = useRef<Map<string, { bytes: number; time: number }>>(new Map());
   const [speeds, setSpeeds] = useState<Map<string, string>>(new Map());
+
+  const toggleExpanded = () => {
+    manualExpandRef.current = true;
+    setExpanded((v) => !v);
+  };
 
   // Completion toast (track previous status)
   const prevStatusRef = useRef<Map<string, string>>(new Map());
@@ -91,7 +97,8 @@ export function TransferBar() {
 
   useEffect(() => {
     if (running) { setExpanded(true); return; }
-    // 所有传输完成后 3 秒自动折叠
+    // 所有传输完成后 3 秒自动折叠；用户手动展开过则尊重其意图
+    if (manualExpandRef.current) return;
     const timer = setTimeout(() => setExpanded(false), 3000);
     return () => clearTimeout(timer);
   }, [running]);
@@ -109,7 +116,7 @@ export function TransferBar() {
         <button
           type="button"
           className="text-zinc-400 hover:text-zinc-200"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => toggleExpanded()}
           aria-expanded={expanded}
         >
           {expanded ? "▾" : "▸"} 传输

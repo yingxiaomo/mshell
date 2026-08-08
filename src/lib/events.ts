@@ -171,7 +171,13 @@ export function onTunnelStatus(
 
 export function encodeTerminalInput(data: string): string {
   const bytes = new TextEncoder().encode(data);
-  return btoa(String.fromCharCode(...bytes));
+  // 分块用 fromCharCode，避免超大粘贴触发 Maximum call stack（spread 有参数上限）
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
 }
 
 export function decodeTerminalOutputBytes(dataB64: string): Uint8Array {

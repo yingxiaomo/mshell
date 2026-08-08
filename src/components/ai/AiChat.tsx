@@ -62,8 +62,12 @@ export function AiChat() {
     const unsubDone = bus.on("ai-done" as any, (data: any) => {
       if (!ownStreamRef.current) return;
       ownStreamRef.current = false;
-      const full = data.text || streamText;
-      setMessages((prev) => [...prev, { role: "assistant", content: full }]);
+      const full = data.text || "";
+      setMessages((prev) => {
+        return full
+          ? [...prev, { role: "assistant", content: full }]
+          : prev;
+      });
       setStreamText("");
       setStreaming(false);
     });
@@ -102,8 +106,10 @@ export function AiChat() {
       model,
       endpoint: ep || "",
     }).catch((e) => {
-      showToast(e instanceof Error ? e.message : String(e), "error");
+      ownStreamRef.current = false;
+      setStreamText("");
       setStreaming(false);
+      showToast(e instanceof Error ? e.message : String(e), "error");
     });
   }, [input, streaming, messages, model, getContext]);
 

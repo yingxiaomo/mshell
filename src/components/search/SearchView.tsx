@@ -66,11 +66,11 @@ export function SearchView() {
     setResults([]);
     setDone(false);
 
-    // Escape double quotes in query for shell safety
-    const safeQuery = q.replace(/"/g, '\\"');
-    const searchPath = path.trim() || ".";
+    // 单引号包裹查询和路径并转义单引号，防止 $()/反引号/双引号命令注入
+    const safeQuery = q.replace(/'/g, "'\\''");
+    const searchPath = (path.trim() || ".").replace(/'/g, "'\\''");
     // Use grep with recursive, line-number, suppress-error
-    const command = `grep -rn "${safeQuery}" ${searchPath} 2>/dev/null | head -100`;
+    const command = `grep -rn '${safeQuery}' '${searchPath}' 2>/dev/null | head -100`;
 
     const allResults: SearchResult[] = [];
     for (const target of targets) {

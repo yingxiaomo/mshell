@@ -24,12 +24,14 @@ type CompiledTrigger = { re: RegExp; name: string; last: number };
 
 type TerminalSlot = "full" | "left" | "right" | "hidden";
 
-/** 解析十六进制字符串（支持空格分隔）为字节数组。 */
+/** 解析十六进制字符串（支持空格分隔、0x 前缀）为字节数组。 */
 function parseHexBytes(hex: string): Uint8Array {
-  const clean = hex.replace(/[^0-9a-fA-F]/g, "");
-  const bytes = new Uint8Array(Math.floor(clean.length / 2));
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  const clean = hex.replace(/0x/gi, " ").replace(/[^0-9a-fA-F]/g, "");
+  // 奇数位时丢弃末尾半字节（无法组成完整字节）
+  const len = clean.length - (clean.length % 2);
+  const bytes = new Uint8Array(len / 2);
+  for (let i = 0; i < len; i += 2) {
+    bytes[i / 2] = parseInt(clean.slice(i, i + 2), 16);
   }
   return bytes;
 }
@@ -184,6 +186,7 @@ export const TerminalView = memo(function TerminalView({
       const t = termRef.current;
       if (t) t.write(text);
     });
+    let pasteTimer: ReturnType<typeof setTimeout> | null = null;
     const unsubDone = bus.on("ai-done" as any, (data: any) => {
       if (!aiActive) return;
       aiActive = false;
@@ -193,7 +196,12 @@ export const TerminalView = memo(function TerminalView({
       const clean = answer.replace(/```[\s\S]*?```/g, "").trim();
       if (clean && !clean.startsWith("无法完成")) {
         t.write("\r\n\x1b[32m💡 建议:\x1b[0m " + clean.split("\n")[0]!.trim() + "\r\n");
-        setTimeout(() => t.paste(clean), 300);
+        if (pasteTimer) clearTimeout(pasteTimer);
+        pasteTimer = setTimeout(() => {
+          // 用 termRef 而非闭包捕获的终端，且确认终端仍存活再粘贴
+          const live = termRef.current;
+          try { live?.paste(clean); } catch { /* 终端已销毁 */ }
+        }, 300);
       } else if (answer) {
         t.write("\r\n" + answer + "\r\n");
       }
@@ -219,7 +227,8 @@ export const TerminalView = memo(function TerminalView({
           term.write("\x1b[D \x1b[D");
           return;
         }
-        if (/[0-9a-fA-F ]/.test(d)) {
+        // 只接受单个十六进制字符/空格，忽略多字符控制序列（如 \x1b[D）
+        if (d.length === 1 && /[0-9a-fA-F ]/.test(d)) {
           hexInputBufRef.current += d;
           term.write(d.toUpperCase());
         }
@@ -253,10 +262,12 @@ export const TerminalView = memo(function TerminalView({
         })();
         return; // 不发送给 SSH
       }
-      // 行缓冲追踪
+      // 行缓冲追踪：只跟踪可打印字符；方向键等转义序列/控制键清空，
+      // 避免「/ai」后按 ↑ 回滚命令误触发，也避免 IME/粘贴（多字符）漏跟踪
       if (d === "\r") cmdBuf = "";
       else if (d === "\x7f") cmdBuf = cmdBuf.slice(0, -1);
-      else if (d.length === 1) cmdBuf += d;
+      else if (d.startsWith("\x1b") || d === "\x03" || d === "\x15" || d === "\x0b") cmdBuf = "";
+      else cmdBuf += d;
 
       const enc = encodeTerminalInput(d);
       cmd(commands.terminalWrite, { sessionId, channelId, data: enc }).catch((e) => console.warn(e));
@@ -347,6 +358,7 @@ export const TerminalView = memo(function TerminalView({
       unsub.dispose();
       unsubChunk();
       unsubDone();
+      if (pasteTimer) clearTimeout(pasteTimer);
       selDisp.dispose();
       resizeUnsub.dispose();
       el.removeEventListener("contextmenu", onContextMenu);
@@ -474,7 +486,7 @@ export const TerminalView = memo(function TerminalView({
       {serialMode && (
         <button
           type="button"
-          onClick={() => setHexMode((v) => !v)}
+          onClick={() => { if (hexMode) hexInputBufRef.current = ""; setHexMode((v) => !v); }}
           title={hexMode ? "HEX 模式已开启：输入十六进制字节，Enter 发送" : "HEX 模式：以十六进制收发数据"}
           className={`absolute right-2 top-2 z-10 rounded px-1.5 py-0.5 text-[10px] font-medium ${
             hexMode ? "bg-sky-600 text-white" : "bg-zinc-800/80 text-zinc-400 hover:text-zinc-200"
