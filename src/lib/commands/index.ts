@@ -149,7 +149,7 @@ export const commands = {
   sshAgentStatus:         make<AgentStatus>("ssh_agent_status"),
 
   // AI 聊天
-  aiChat:                 make<void, { messages: { role: string; content: string }[]; apiKey: string; model: string; endpoint: string }>("ai_chat"),
+  aiChat:                 make<void, { messages: { role: string; content: string }[]; apiKey: string; model: string; endpoint: string; requestId: string }>("ai_chat"),
   aiSaveKey:              make<void, { key: string }>("ai_save_key"),
   aiGetKey:               make<string>("ai_get_key"),
   aiHasKey:               make<boolean>("ai_has_key"),

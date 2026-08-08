@@ -103,8 +103,12 @@ export function replayTerminalHistory(sessionId: string): Uint8Array[] {
 }
 
 /** Move history chunks into pending so the poll timer consumes them gradually.
- *  Only feeds when pending is empty to avoid duplicating already-buffered data. */
+ *  Only feeds ONCE per session (tracked in `fed`), so remounts / effect re-runs
+ *  don't re-inject already-rendered history and duplicate scrollback. */
+const fed = new Set<string>();
+
 export function feedHistoryToPending(sessionId: string): void {
+  if (fed.has(sessionId)) return;
   const h = buf.history.get(sessionId);
   if (!h || h.length === 0) return;
   let p = buf.pending.get(sessionId);
@@ -114,10 +118,12 @@ export function feedHistoryToPending(sessionId: string): void {
     buf.pending.set(sessionId, p);
   }
   p.unshift(...h);
+  fed.add(sessionId);
 }
 
 /** Drop buffers when a session tab is closed. */
 export function clearTerminalBuffers(sessionId: string): void {
+  fed.delete(sessionId);
   buf.pending.delete(sessionId);
   buf.history.delete(sessionId);
   buf.carryover.delete(sessionId);

@@ -55,6 +55,7 @@ pub async fn ai_get_endpoint() -> Result<String, String> {
 /// Streaming chat with the AI.
 /// If `endpoint` is set, uses it as the base URL (OpenAI-compatible).
 /// Otherwise defaults to Anthropic for Claude models or OpenAI.
+/// `request_id` correlates chunk/done events so concurrent requests don't interleave.
 #[tauri::command]
 pub async fn ai_chat(
     app: AppHandle,
@@ -62,17 +63,18 @@ pub async fn ai_chat(
     api_key: String,
     model: String,
     endpoint: String,
+    request_id: String,
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
     let is_claude = model.starts_with("claude");
 
     if !endpoint.trim().is_empty() {
         // Custom endpoint: OpenAI-compatible API
-        chat_custom(&app, &client, &messages, &api_key, &model, &endpoint).await
+        chat_custom(&app, &client, &messages, &api_key, &model, &endpoint, &request_id).await
     } else if is_claude {
-        chat_claude(&app, &client, &messages, &api_key, &model).await
+        chat_claude(&app, &client, &messages, &api_key, &model, &request_id).await
     } else {
-        chat_openai(&app, &client, &messages, &api_key, &model).await
+        chat_openai(&app, &client, &messages, &api_key, &model, &request_id).await
     }
 }
 
@@ -200,6 +202,7 @@ async fn chat_custom(
     api_key: &str,
     model: &str,
     endpoint: &str,
+    request_id: &str,
 ) -> Result<(), String> {
     let base = endpoint.trim_end_matches('/');
     let url = format!("{base}/chat/completions");
@@ -229,9 +232,9 @@ async fn chat_custom(
     }
 
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    let full_text = parse_sse(&bytes, |delta| { let _ = app.emit("ai-chunk", delta); });
+    let full_text = parse_sse(&bytes, |delta| { let _ = app.emit("ai-chunk", serde_json::json!({ "requestId": request_id, "text": delta })); });
 
-    let _ = app.emit("ai-done", serde_json::json!({ "text": full_text }));
+    let _ = app.emit("ai-done", serde_json::json!({ "requestId": request_id, "text": full_text }));
     Ok(())
 }
 
@@ -241,6 +244,7 @@ async fn chat_claude(
     messages: &[ChatMessage],
     api_key: &str,
     model: &str,
+    request_id: &str,
 ) -> Result<(), String> {
     let mut system_msg = String::new();
     let msgs: Vec<serde_json::Value> = messages
@@ -281,9 +285,9 @@ async fn chat_claude(
     }
 
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    let full_text = parse_sse(&bytes, |delta| { let _ = app.emit("ai-chunk", delta); });
+    let full_text = parse_sse(&bytes, |delta| { let _ = app.emit("ai-chunk", serde_json::json!({ "requestId": request_id, "text": delta })); });
 
-    let _ = app.emit("ai-done", serde_json::json!({ "text": full_text }));
+    let _ = app.emit("ai-done", serde_json::json!({ "requestId": request_id, "text": full_text }));
     Ok(())
 }
 
@@ -293,6 +297,7 @@ async fn chat_openai(
     messages: &[ChatMessage],
     api_key: &str,
     model: &str,
+    request_id: &str,
 ) -> Result<(), String> {
     let msgs: Vec<serde_json::Value> = messages
         .iter()
@@ -320,9 +325,9 @@ async fn chat_openai(
     }
 
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    let full_text = parse_sse(&bytes, |delta| { let _ = app.emit("ai-chunk", delta); });
+    let full_text = parse_sse(&bytes, |delta| { let _ = app.emit("ai-chunk", serde_json::json!({ "requestId": request_id, "text": delta })); });
 
-    let _ = app.emit("ai-done", serde_json::json!({ "text": full_text }));
+    let _ = app.emit("ai-done", serde_json::json!({ "requestId": request_id, "text": full_text }));
     Ok(())
 }
 

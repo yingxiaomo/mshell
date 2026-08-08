@@ -23,7 +23,7 @@ export function AiChat() {
   const [draftKey, setDraftKey] = useState("");
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
-  const ownStreamRef = useRef(false);
+  const ownStreamRef = useRef<string | null>(null);
 
   // 检查 Key 状态 + 加载配置
   useEffect(() => {
@@ -53,15 +53,14 @@ export function AiChat() {
 
   // Listen for streaming chunks
   useEffect(() => {
-    // 仅当面板自身发起了请求（streaming=true）才消费流式事件，
-    // 避免终端 /ai 的回复乱入面板历史。
-    const unsubChunk = bus.on("ai-chunk" as any, (text: string) => {
-      if (!ownStreamRef.current) return;
-      setStreamText((prev) => prev + text);
+    // 仅消费面板自身发起的请求（通过 requestId 关联），避免终端 /ai 的回复乱入
+    const unsubChunk = bus.on("ai-chunk" as any, (payload: { requestId: string; text: string }) => {
+      if (ownStreamRef.current !== payload.requestId) return;
+      setStreamText((prev) => prev + payload.text);
     });
-    const unsubDone = bus.on("ai-done" as any, (data: any) => {
-      if (!ownStreamRef.current) return;
-      ownStreamRef.current = false;
+    const unsubDone = bus.on("ai-done" as any, (data: { requestId: string; text: string }) => {
+      if (ownStreamRef.current !== data.requestId) { ownStreamRef.current = null; return; }
+      ownStreamRef.current = null;
       const full = data.text || "";
       setMessages((prev) => {
         return full
@@ -89,7 +88,8 @@ export function AiChat() {
     setInput("");
     const userMsg: ChatMsg = { role: "user", content: msg };
     setMessages((prev) => [...prev, userMsg]);
-    ownStreamRef.current = true;
+    const requestId = `panel-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    ownStreamRef.current = requestId;
     setStreaming(true);
     setStreamText("");
 
@@ -105,8 +105,9 @@ export function AiChat() {
       apiKey: key || "",
       model,
       endpoint: ep || "",
+      requestId,
     }).catch((e) => {
-      ownStreamRef.current = false;
+      ownStreamRef.current = null;
       setStreamText("");
       setStreaming(false);
       showToast(e instanceof Error ? e.message : String(e), "error");

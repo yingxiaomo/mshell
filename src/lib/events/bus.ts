@@ -27,8 +27,8 @@ export interface EventMap {
   [EventName.SESSION_DISCONNECTED]: SessionDisconnectedEvent;
   [EventName.TRANSFER_PROGRESS]:    TransferProgressEvent;
   [EventName.TUNNEL_STATUS]:        TunnelStatus;
-  "ai-chunk":                       string;
-  "ai-done":                        { text: string };
+  "ai-chunk":                       { requestId: string; text: string };
+  "ai-done":                        { requestId: string; text: string };
 }
 
 export type EventName_ = keyof EventMap;

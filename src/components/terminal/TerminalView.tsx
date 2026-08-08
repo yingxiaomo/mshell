@@ -137,10 +137,12 @@ export const TerminalView = memo(function TerminalView({
     termRef.current = term;
     fitRef.current = fit;
 
-    // Prevent wheel events from generating \x1b[A/\x1b[B escape sequences.
-    // Capture in the capture phase so we intercept before xterm's internal
-    // handler converts scroll events to cursor-key input.
+    // Prevent wheel events from generating \x1b[A/\x1b[B escape sequences in
+    // NORMAL screen mode (fixes ^[[B flood on scroll). In ALTERNATE screen
+    // (vim/less/tmux), let xterm forward the wheel to the app (mouse reporting).
     const onWheel = (e: WheelEvent) => {
+      const term = termRef.current;
+      if (term && term.buffer.active.type === "alternate") return; // 放行给应用
       const viewport = el.querySelector('.xterm-viewport') as HTMLElement | null;
       if (viewport && e.deltaY !== 0) {
         viewport.scrollBy({ top: e.deltaY, behavior: 'auto' });
@@ -177,19 +179,20 @@ export const TerminalView = memo(function TerminalView({
 
     // ── AI 智能命令（/ai 前缀）：输入自然语言，AI 自动生成命令 ──
     let cmdBuf = "";
-    // 仅当前标签自身发出 /ai 后才响应 ai-chunk/ai-done，避免多个标签页互相串扰
-    let aiActive = false;
+    // 仅当前标签自身发出 /ai 后才响应 ai-chunk/ai-done，且用 requestId 关联，
+    // 避免多个标签页互相串扰、并发请求截断
+    let aiRequestId: string | null = null;
 
     // AI 回复流式写入终端
-    const unsubChunk = bus.on("ai-chunk" as any, (text: string) => {
-      if (!aiActive) return;
+    const unsubChunk = bus.on("ai-chunk" as any, (payload: { requestId: string; text: string }) => {
+      if (aiRequestId !== payload.requestId) return;
       const t = termRef.current;
-      if (t) t.write(text);
+      if (t) t.write(payload.text);
     });
     let pasteTimer: ReturnType<typeof setTimeout> | null = null;
-    const unsubDone = bus.on("ai-done" as any, (data: any) => {
-      if (!aiActive) return;
-      aiActive = false;
+    const unsubDone = bus.on("ai-done" as any, (data: { requestId: string; text: string }) => {
+      if (aiRequestId !== data.requestId) { aiRequestId = null; return; }
+      aiRequestId = null;
       const t = termRef.current;
       if (!t) return;
       const answer = data?.text || "";
@@ -248,7 +251,7 @@ export const TerminalView = memo(function TerminalView({
             ]);
             if (!key) { term.write("\x1b[33m⚠ AI 未配置，请先去 AI 面板设置 API Key\x1b[0m\r\n"); return; }
             term.write("\x1b[90m🤔 分析中...\x1b[0m\r\n");
-            aiActive = true;
+            aiRequestId = `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
             const m = typeof localStorage !== "undefined" ? localStorage.getItem("momoshell.ai-model") || "claude-sonnet-5-20250709" : "claude-sonnet-5-20250709";
             const ctx = replayTerminalHistory(sessionId).slice(-8).map((c) => new TextDecoder().decode(c)).join("");
             await cmd(commands.aiChat, {
@@ -256,9 +259,9 @@ export const TerminalView = memo(function TerminalView({
                 { role: "system", content: `你是 mshell 终端助手。\n最近终端输出:\n${ctx.slice(-3000)}\n用户用自然语言描述需求，请回复可执行的 shell 命令。只输出命令本身，不要解释。` },
                 { role: "user", content: prompt },
               ],
-              apiKey: key, model: m, endpoint: ep || "",
+              apiKey: key, model: m, endpoint: ep || "", requestId: aiRequestId,
             });
-          } catch { aiActive = false; term.write("\x1b[31m⚠ AI 请求失败\x1b[0m\r\n"); }
+          } catch { aiRequestId = null; term.write("\x1b[31m⚠ AI 请求失败\x1b[0m\r\n"); }
         })();
         return; // 不发送给 SSH
       }
