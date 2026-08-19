@@ -97,6 +97,12 @@ impl TransferQueue {
         cvar.notify_one();
     }
 
+    /// True if a transfer id is still tracked (registered and not finished).
+    /// Lets callers prune stale cancel flags without guessing.
+    pub fn is_tracked(&self, transfer_id: Uuid) -> bool {
+        lock_recover(&self.cancels).contains_key(&transfer_id)
+    }
+
     pub fn is_cancelled(flag: &AtomicBool) -> bool {
         flag.load(Ordering::Relaxed)
     }

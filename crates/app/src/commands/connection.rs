@@ -147,7 +147,7 @@ pub fn save_connection(
     }
 
     if let Some(pp) = passphrase {
-        let id = format!("momoshell/{}/passphrase", conn.id);
+        let id = format!("mshell/{}/passphrase", conn.id);
         ssh_core::creds::set_secret(&id, &pp).or_err()?;
         match &mut conn.auth {
             AuthMethod::PrivateKey {
@@ -199,7 +199,7 @@ pub fn delete_connection(state: State<'_, AppState>, id: Uuid) -> Result<(), Str
         }
     }
     let _ = ssh_core::creds::delete_secret(&ssh_core::creds::password_credential_id(id));
-    let _ = ssh_core::creds::delete_secret(&format!("momoshell/{id}/passphrase"));
+    let _ = ssh_core::creds::delete_secret(&format!("mshell/{id}/passphrase"));
 
     store.delete(id).or_err()?;
     Ok(())

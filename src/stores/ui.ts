@@ -23,13 +23,13 @@ export function editorTabId(sessionId: string, remotePath: string): string {
 /** Consume (and clear) a previously stored gotoLine for an editor tab. */
 export function consumeGotoLine(tabId: string): number | undefined {
   try {
-    const raw = localStorage.getItem("momoshell.editor-goto.v1");
+    const raw = localStorage.getItem("mshell.editor-goto.v1");
     if (!raw) return undefined;
     const map = JSON.parse(raw);
     const line = map[tabId] as number | undefined;
     if (line != null) {
       delete map[tabId];
-      localStorage.setItem("momoshell.editor-goto.v1", JSON.stringify(map));
+      localStorage.setItem("mshell.editor-goto.v1", JSON.stringify(map));
     }
     return line;
   } catch {
@@ -79,7 +79,7 @@ type UiState = {
 };
 
 // Bump when store shape changes so HMR drops stale singletons.
-const UI_KEY = "__momoshell_ui_store_v5__";
+const UI_KEY = "__mshell_ui_store_v5__";
 type GlobalBag = typeof globalThis & {
   [UI_KEY]?: ReturnType<typeof createUiStore>;
 };
@@ -102,9 +102,9 @@ function createUiStore() {
       // Store gotoLine in a side channel so it can be consumed once after mount.
       if (f.gotoLine) {
         try {
-          const map = JSON.parse(localStorage.getItem("momoshell.editor-goto.v1") || "{}");
+          const map = JSON.parse(localStorage.getItem("mshell.editor-goto.v1") || "{}");
           map[id] = f.gotoLine;
-          localStorage.setItem("momoshell.editor-goto.v1", JSON.stringify(map));
+          localStorage.setItem("mshell.editor-goto.v1", JSON.stringify(map));
         } catch { /* ignore */ }
       }
       set((s) => {
@@ -227,7 +227,7 @@ function createUiStore() {
 
     sessionNotes: (() => {
       try {
-        const raw = localStorage.getItem("momoshell.session-notes.v1");
+        const raw = localStorage.getItem("mshell.session-notes.v1");
         if (raw) return JSON.parse(raw);
       } catch { /* ignore */ }
       return {};
@@ -235,7 +235,7 @@ function createUiStore() {
     setSessionNote: (sessionId, text) => {
       set((s) => {
         const notes = { ...s.sessionNotes, [sessionId]: text };
-        try { localStorage.setItem("momoshell.session-notes.v1", JSON.stringify(notes)); } catch { /* ignore */ }
+        try { localStorage.setItem("mshell.session-notes.v1", JSON.stringify(notes)); } catch { /* ignore */ }
         return { sessionNotes: notes };
       });
     },

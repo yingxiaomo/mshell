@@ -40,22 +40,18 @@ pub fn write_all(channel: &mut Channel, data: &[u8]) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// Non-blocking variant of [`write_all`].  Returns immediately; if the
-/// channel's send window is full the data is silently dropped so the
-/// session-worker loop stays responsive.  Terminal input is ephemeral
-/// (the next keystroke supersedes the previous one anyway).
-pub fn try_write_all(channel: &mut Channel, data: &[u8]) -> Result<(), CoreError> {
+/// Non-blocking write to the shell channel: writes as much as the send window
+/// accepts and returns the number of bytes **not yet written** (callers keep
+/// those queued and retry on the next poll tick — see [`crate::session_worker`]).
+/// Never blocks; would-be-blocked bytes are returned for retry, not dropped.
+pub fn try_write(channel: &mut Channel, data: &[u8]) -> Result<usize, CoreError> {
     match channel.write(data) {
-        Ok(_n) => {
+        // Partial write: n < len leaves the rest queued for the next tick.
+        Ok(n) => {
             let _ = channel.flush();
-            Ok(())
+            Ok(data.len() - n)
         }
-        Err(e) if is_would_block(&e) => {
-            // The remote's receive window is full — discard the write
-            // rather than stall the worker thread.
-            eprintln!("[ssh] dropped {} bytes of input (remote window full)", data.len());
-            Ok(())
-        }
+        Err(e) if is_would_block(&e) => Ok(data.len()),
         Err(e) => Err(CoreError::Io(e)),
     }
 }

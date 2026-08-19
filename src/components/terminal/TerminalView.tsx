@@ -180,19 +180,24 @@ export const TerminalView = memo(function TerminalView({
     // ── AI 智能命令（/ai 前缀）：输入自然语言，AI 自动生成命令 ──
     let cmdBuf = "";
     // 仅当前标签自身发出 /ai 后才响应 ai-chunk/ai-done，且用 requestId 关联，
-    // 避免多个标签页互相串扰、并发请求截断
-    let aiRequestId: string | null = null;
+    // 避免多个标签页互相串扰、并发请求截断。用 Set 跟踪所有在途请求：并发
+    // 多个 /ai 时，单个请求的 done 只清理自己，不会把后续请求一并作废。
+    const activeAiRequests = new Set<string>();
+
+    // 超时兜底：后端网络悬挂时（见 commands/ai.rs 无超时）也要清理在途请求，
+    // 否则终端永远停留在"分析中…"。每个请求 120s 上限。
+    const AI_TIMEOUT_MS = 120_000;
 
     // AI 回复流式写入终端
     const unsubChunk = bus.on("ai-chunk" as any, (payload: { requestId: string; text: string }) => {
-      if (aiRequestId !== payload.requestId) return;
+      if (!activeAiRequests.has(payload.requestId)) return;
       const t = termRef.current;
       if (t) t.write(payload.text);
     });
     let pasteTimer: ReturnType<typeof setTimeout> | null = null;
     const unsubDone = bus.on("ai-done" as any, (data: { requestId: string; text: string }) => {
-      if (aiRequestId !== data.requestId) { aiRequestId = null; return; }
-      aiRequestId = null;
+      if (!activeAiRequests.has(data.requestId)) return;
+      activeAiRequests.delete(data.requestId);
       const t = termRef.current;
       if (!t) return;
       const answer = data?.text || "";
@@ -251,17 +256,33 @@ export const TerminalView = memo(function TerminalView({
             ]);
             if (!key) { term.write("\x1b[33m⚠ AI 未配置，请先去 AI 面板设置 API Key\x1b[0m\r\n"); return; }
             term.write("\x1b[90m🤔 分析中...\x1b[0m\r\n");
-            aiRequestId = `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-            const m = typeof localStorage !== "undefined" ? localStorage.getItem("momoshell.ai-model") || "claude-sonnet-5-20250709" : "claude-sonnet-5-20250709";
+            const requestId = `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+            activeAiRequests.add(requestId);
+            const m = typeof localStorage !== "undefined" ? localStorage.getItem("mshell.ai-model") || "claude-sonnet-5-20250709" : "claude-sonnet-5-20250709";
             const ctx = replayTerminalHistory(sessionId).slice(-8).map((c) => new TextDecoder().decode(c)).join("");
-            await cmd(commands.aiChat, {
-              messages: [
-                { role: "system", content: `你是 mshell 终端助手。\n最近终端输出:\n${ctx.slice(-3000)}\n用户用自然语言描述需求，请回复可执行的 shell 命令。只输出命令本身，不要解释。` },
-                { role: "user", content: prompt },
-              ],
-              apiKey: key, model: m, endpoint: ep || "", requestId: aiRequestId,
-            });
-          } catch { aiRequestId = null; term.write("\x1b[31m⚠ AI 请求失败\x1b[0m\r\n"); }
+            // 并发安全的请求级超时：仅清理自己，不影响其他在途 /ai。
+            const timeoutId = setTimeout(() => {
+              if (!activeAiRequests.has(requestId)) return;
+              activeAiRequests.delete(requestId);
+              term.write("\r\n\x1b[31m⚠ AI 请求超时（120s 无响应）\x1b[0m\r\n");
+            }, AI_TIMEOUT_MS);
+            try {
+              await cmd(commands.aiChat, {
+                messages: [
+                  { role: "system", content: `你是 mshell 终端助手。\n最近终端输出:\n${ctx.slice(-3000)}\n用户用自然语言描述需求，请回复可执行的 shell 命令。只输出命令本身，不要解释。` },
+                  { role: "user", content: prompt },
+                ],
+                apiKey: key, model: m, endpoint: ep || "", requestId,
+              });
+            } catch {
+              if (activeAiRequests.has(requestId)) {
+                activeAiRequests.delete(requestId);
+                term.write("\x1b[31m⚠ AI 请求失败\x1b[0m\r\n");
+              }
+            } finally {
+              clearTimeout(timeoutId);
+            }
+          } catch { term.write("\x1b[31m⚠ AI 请求失败\x1b[0m\r\n"); }
         })();
         return; // 不发送给 SSH
       }

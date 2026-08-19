@@ -70,7 +70,7 @@ type SettingsState = {
   clearCredentials: () => Promise<void>;
 };
 
-const SETTINGS_KEY = "__momoshell_settings_store__";
+const SETTINGS_KEY = "__mshell_settings_store__";
 type GlobalBag = typeof globalThis & {
   [SETTINGS_KEY]?: ReturnType<typeof createSettingsStore>;
 };

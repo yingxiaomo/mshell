@@ -23,7 +23,7 @@ pub fn save_settings(
 /// Delete all known keyring secrets referenced by saved connections.
 ///
 /// Walks password `credential_id`s and key/cert passphrase ids, plus the
-/// conventional `momoshell/{id}/password` and `momoshell/{id}/passphrase` ids.
+/// conventional `mshell/{id}/password` and `mshell/{id}/passphrase` ids.
 #[tauri::command]
 pub fn clear_all_credentials(state: State<'_, AppState>) -> Result<(), String> {
     let store = state.connections.lock().or_err()?;
@@ -47,7 +47,7 @@ pub fn clear_all_credentials(state: State<'_, AppState>) -> Result<(), String> {
             _ => {}
         }
         let _ = ssh_core::creds::delete_secret(&ssh_core::creds::password_credential_id(conn.id));
-        let _ = ssh_core::creds::delete_secret(&format!("momoshell/{}/passphrase", conn.id));
+        let _ = ssh_core::creds::delete_secret(&format!("mshell/{}/passphrase", conn.id));
     }
 
     Ok(())

@@ -46,8 +46,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Survive Vite HMR so SessionList / FilesView / TerminalTabs share one store. */
 // Bump suffix when store shape / side-effects change so HMR drops stale instances.
-const SESSIONS_KEY = "__momoshell_sessions_store_v2__";
-const LOOPS_KEY = "__momoshell_reconnect_loops_v2__";
+const SESSIONS_KEY = "__mshell_sessions_store_v2__";
+const LOOPS_KEY = "__mshell_reconnect_loops_v2__";
 
 type GlobalBag = typeof globalThis & {
   [SESSIONS_KEY]?: ReturnType<typeof createSessionsStore>;

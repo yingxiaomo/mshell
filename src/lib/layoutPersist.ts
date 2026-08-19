@@ -5,7 +5,7 @@
 import { useSettingsStore } from "../stores/settings";
 import { useUiStore } from "../stores/ui";
 
-const LAYOUT_KEY = "__momoshell_layout_persist_v1__";
+const LAYOUT_KEY = "__mshell_layout_persist_v1__";
 
 type LayoutBag = {
   timer: ReturnType<typeof setTimeout> | null;

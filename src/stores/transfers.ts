@@ -36,7 +36,7 @@ type TransfersState = {
   remove: (transferId: string) => void;
 };
 
-const TRANSFERS_KEY = "__momoshell_transfers_store_v1__";
+const TRANSFERS_KEY = "__mshell_transfers_store_v1__";
 type GlobalBag = typeof globalThis & {
   [TRANSFERS_KEY]?: ReturnType<typeof createTransfersStore>;
 };

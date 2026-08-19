@@ -5,12 +5,18 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::CoreError;
+
+/// Serialize known-host load-modify-save critical sections. Concurrent first-seen
+/// writes (two sessions connecting to different hosts at once) must not
+/// read-modify-write the same file and lose each other's entries.
+static KNOWN_HOSTS_LOCK: Mutex<()> = Mutex::new(());
 
 /// How to treat host keys during connect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -57,11 +63,11 @@ pub fn fingerprints_equal(a: &str, b: &str) -> bool {
     a == b
 }
 
-/// Default path: `{dirs::data_dir()}/momoshell/known_hosts.json`.
+/// Default path: `{dirs::data_dir()}/mshell/known_hosts.json`.
 pub fn default_known_hosts_path() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("momoshell")
+        .join("mshell")
         .join("known_hosts.json")
 }
 
@@ -77,14 +83,45 @@ pub fn load_known_hosts(path: &Path) -> Result<KnownHostsFile, CoreError> {
     Ok(serde_json::from_str(&data)?)
 }
 
-/// Persist known hosts JSON (creates parent dirs).
+/// Persist known hosts JSON (creates parent dirs) via an atomic replace: write a
+/// sibling temp file, fsync, then rename over the target so a crash mid-write
+/// never leaves a truncated known_hosts.json behind.
 pub fn save_known_hosts(path: &Path, file: &KnownHostsFile) -> Result<(), CoreError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let data = serde_json::to_string_pretty(file)?;
-    fs::write(path, data)?;
-    Ok(())
+    atomic_write(path, data.as_bytes())
+}
+
+/// Write `data` to `path` atomically (temp file + rename in the same dir).
+fn atomic_write(path: &Path, data: &[u8]) -> Result<(), CoreError> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let dir = parent.unwrap_or_else(|| Path::new("."));
+    let mut tmp = dir.to_path_buf();
+    // Same dir → rename() is atomic on the same filesystem.
+    let unique = format!(
+        ".{}.tmp{}",
+        path.file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "known_hosts".into()),
+        std::process::id()
+    );
+    tmp.push(unique);
+    {
+        use std::io::Write;
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+    }
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Clean up the temp file; don't mask the rename failure.
+            let _ = fs::remove_file(&tmp);
+            Err(e.into())
+        }
+    }
 }
 
 /// Look up a stored entry by `host:port` key.
@@ -121,6 +158,9 @@ pub fn verify_host_key(
         return Ok(fingerprint);
     }
 
+    // Serialize load→compare→possibly-save so concurrent first-seen connects
+    // can't lose entries (read-modify-write race on the same JSON file).
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut file = load_known_hosts(store_path)?;
     match find_entry(&file, &host_key) {
         Some(existing) if fingerprints_equal(&existing.fingerprint, &fingerprint) => {
@@ -174,8 +214,11 @@ fn normalize_known_host_token(tok: &str) -> Option<String> {
 /// Parse OpenSSH `known_hosts` text into [`KnownHostEntry`] rows.
 ///
 /// Hashed host lines (`|1|…`) are skipped (the host can't be recovered), as are
-/// comments, `@revoked` / `@cert-authority` markers, and unparseable lines. Each
-/// comma-separated host alias yields its own entry sharing the key fingerprint.
+/// comments, `@revoked` markers (a revoked key must NOT be re-imported as a
+/// trusted entry), and unparseable lines. `@cert-authority` markers keep their
+/// authority keys (they authorize hosts rather than pin them, and importing the
+/// CA key lets us verify signed host keys). Each comma-separated host alias
+/// yields its own entry sharing the key fingerprint.
 pub fn parse_openssh_known_hosts(content: &str) -> Vec<KnownHostEntry> {
     let mut out = Vec::new();
     for raw in content.lines() {
@@ -183,11 +226,16 @@ pub fn parse_openssh_known_hosts(content: &str) -> Vec<KnownHostEntry> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        // Strip a leading @marker (e.g. `@cert-authority hosts type key`).
+        // Handle @marker lines: `@revoked` entries are a deny list — skip them.
+        // `@cert-authority` lines keep the rest of the line (the CA key).
         let line = if let Some(rest) = line.strip_prefix('@') {
-            match rest.split_once(char::is_whitespace) {
-                Some((_, r)) => r.trim_start(),
-                None => continue,
+            if rest.starts_with("revoked") || rest.starts_with("revoked ") {
+                continue;
+            }
+            if let Some(after) = rest.strip_prefix("cert-authority ") {
+                after.trim_start()
+            } else {
+                continue;
             }
         } else {
             line
@@ -223,6 +271,9 @@ pub fn parse_openssh_known_hosts(content: &str) -> Vec<KnownHostEntry> {
 /// number of host entries merged.
 pub fn import_openssh_known_hosts(store_path: &Path, content: &str) -> Result<usize, CoreError> {
     let entries = parse_openssh_known_hosts(content);
+    // Serialize with the same lock used by verify_host_key so a concurrent
+    // connect can't clobber half-merged state.
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut file = load_known_hosts(store_path)?;
     let n = entries.len();
     for entry in entries {
@@ -261,7 +312,8 @@ mod tests {
              [bastion.example.com]:2222 ssh-rsa QUJD\n\
              host1,host2 ssh-ed25519 QUJD\n\
              |1|aGFzaA==|aGFzaA== ssh-rsa QUJD\n\
-             @cert-authority ca.example.com ssh-ed25519 QUJD\n";
+             @cert-authority ca.example.com ssh-ed25519 QUJD\n\
+             @revoked rev.example.com ssh-ed25519 QUJD\n";
         let entries = parse_openssh_known_hosts(content);
         let hosts: Vec<&str> = entries.iter().map(|e| e.host.as_str()).collect();
         assert!(hosts.contains(&"example.com:22"));
@@ -270,6 +322,8 @@ mod tests {
         assert!(hosts.contains(&"host2:22"));
         assert!(hosts.contains(&"ca.example.com:22")); // @cert-authority marker stripped
         assert!(!hosts.iter().any(|h| h.contains("hash"))); // hashed line skipped
+        // @revoked is a deny list — its key must NOT be re-imported as trusted.
+        assert!(!hosts.iter().any(|h| h.starts_with("rev")));
         assert!(entries[0].fingerprint.starts_with("SHA256:"));
         assert_eq!(entries[0].fingerprint, fingerprint_sha256(b"ABC"));
     }

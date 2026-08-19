@@ -249,7 +249,7 @@ fn real_conn() -> Option<(Connection, Option<String>)> {
     let port = entry["port"].as_u64()? as u16;
     let user = entry["username"].as_str()?.to_string();
     let pw = entry["password"].as_str()?.to_string();
-    let cid = format!("momoshell/realtest-{}/password", Uuid::new_v4());
+    let cid = format!("mshell/realtest-{}/password", Uuid::new_v4());
     ssh_core::creds::set_secret(&cid, &pw).ok()?;
     Some((
         Connection {
@@ -329,7 +329,7 @@ fn real_server_full_session() {
         let port = entry["port"].as_u64().unwrap() as u16;
         let user = entry["username"].as_str().unwrap().to_string();
         let pw = entry["password"].as_str().unwrap().to_string();
-        let cid = format!("momoshell/realtest-{}/password", Uuid::new_v4());
+        let cid = format!("mshell/realtest-{}/password", Uuid::new_v4());
         ssh_core::creds::set_secret(&cid, &pw).expect("set_secret");
         cleanup_cred = Some(cid.clone());
         (host, port, user, AuthMethod::Password { credential_id: cid })
@@ -498,8 +498,8 @@ fn full_session_shell_exec_sftp_tunnel_isolated() {
     // ── connect + shell echo ────────────────────────────────────────────
     let sid = mgr.connect(&conn, KnownHostsPolicy::AcceptAll).expect("connect");
     let chan = mgr.open_shell(sid, 80, 24).expect("open_shell");
-    let banner = wait_output(&rx, "momoshell-test-shell", Duration::from_secs(5));
-    assert!(banner.contains("momoshell-test-shell"), "no shell banner: {banner:?}");
+    let banner = wait_output(&rx, "mshell-test-shell", Duration::from_secs(5));
+    assert!(banner.contains("mshell-test-shell"), "no shell banner: {banner:?}");
     mgr.write(sid, chan, b"hello123\n".to_vec()).unwrap();
     let echoed = wait_output(&rx, "hello123", Duration::from_secs(5));
     assert!(echoed.contains("hello123"), "shell did not echo input: {echoed:?}");

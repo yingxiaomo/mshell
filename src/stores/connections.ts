@@ -30,7 +30,7 @@ interface ConnectionsState {
   importPutty: () => Promise<void>;
 }
 
-const CONNECTIONS_KEY = "__momoshell_connections_store_v1__";
+const CONNECTIONS_KEY = "__mshell_connections_store_v1__";
 type GlobalBag = typeof globalThis & {
   [CONNECTIONS_KEY]?: ReturnType<typeof createConnectionsStore>;
 };

@@ -26,7 +26,7 @@ function safeListen<T>(
 // TerminalView polls consumeTerminalOutput(); StrictMode remount must not
 // permanently drop early MOTD/prompt, so we keep a replayable history.
 
-const BUF_KEY = "__momoshell_term_buf__";
+const BUF_KEY = "__mshell_term_buf__";
 type BufBag = {
   pending: Map<string, Uint8Array[]>;
   history: Map<string, Uint8Array[]>;

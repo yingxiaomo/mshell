@@ -1,4 +1,4 @@
-# Sample multi-host config for momoshell parser tests
+# Sample multi-host config for mshell parser tests
 Host *
     ServerAliveInterval 60
 

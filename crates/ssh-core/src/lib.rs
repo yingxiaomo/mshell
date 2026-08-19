@@ -23,7 +23,7 @@ pub mod tunnel;
 
 pub use auth::{auth_method_label, authenticate};
 pub use creds::{
-    clear_all_momoshell_secrets, credential_id_for_password, delete_secret, get_secret,
+    clear_all_mshell_secrets, credential_id_for_password, delete_secret, get_secret,
     password_credential_id, set_secret, KeyringSecretStore, SecretStore, SERVICE_NAME,
 };
 pub use error::CoreError;

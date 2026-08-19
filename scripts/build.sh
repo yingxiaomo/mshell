@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build script for momoshell
+# Build script for mshell
 # Prerequisites: Node.js 20+, Rust stable, MSVC build tools
 
 set -euo pipefail
@@ -10,11 +10,11 @@ npm run build
 
 echo ""
 echo "=== 2. Rust release build ==="
-cargo build -p momoshell --release
+cargo build -p mshell --release
 
 echo ""
 echo "=== 3. Collect artifacts ==="
-ARTIFACT="target/release/momoshell.exe"
+ARTIFACT="target/release/mshell.exe"
 if [ -f "$ARTIFACT" ]; then
     ls -lh "$ARTIFACT"
 else
@@ -24,7 +24,7 @@ fi
 echo ""
 echo "=== 4. Run tests ==="
 npx vitest run --silent 2>/dev/null || echo "(vitest not configured, skip)"
-cargo test -p protocol -p store -p momoshell --lib --quiet 2>/dev/null || echo "(backend tests)"
+cargo test -p protocol -p store -p mshell --lib --quiet 2>/dev/null || echo "(backend tests)"
 
 echo ""
 echo "=== 5. Check type ==="

@@ -42,7 +42,7 @@ export function KeysView() {
       const path = genName.trim()
         ? `~/.ssh/${genName.trim().replace(/[^a-zA-Z0-9_-]/g, "_")}`
         : undefined;
-      await cmd(commands.generateKeypair, { path, comment: "momoshell" });
+      await cmd(commands.generateKeypair, { path, comment: "mshell" });
       showToast("密钥已生成", "success");
       setGenOpen(false);
       setGenName("");
@@ -162,7 +162,7 @@ export function KeysView() {
 
             <label className="mb-1 block text-[11px] font-medium text-zinc-400">名称（可选）</label>
             <input className="mb-4 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-600"
-              placeholder="留空使用默认名 momoshell_ed25519" value={genName} onChange={(e) => setGenName(e.target.value)}
+              placeholder="留空使用默认名 mshell_ed25519" value={genName} onChange={(e) => setGenName(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Escape") setGenOpen(false); if (e.key === "Enter") { e.preventDefault(); void handleGenerate(); } }} />
 
             <div className="flex justify-end gap-2">

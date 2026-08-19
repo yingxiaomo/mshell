@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal real SSH server (paramiko) for testing momoshell's ssh-core.
+"""Minimal real SSH server (paramiko) for testing mshell's ssh-core.
 
 Supports: publickey auth, PTY+shell (echo), exec, SFTP (rooted at a temp dir),
 and direct-tcpip local forwarding (relays to the requested host:port).
@@ -155,7 +155,7 @@ class StubSFTPServer(paramiko.SFTPServerInterface):
 # --- shell / exec / relay ---------------------------------------------------
 def echo_shell(chan):
     try:
-        chan.send(b"momoshell-test-shell\r\n")
+        chan.send(b"mshell-test-shell\r\n")
         while True:
             data = chan.recv(4096)
             if not data:

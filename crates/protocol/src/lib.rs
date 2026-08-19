@@ -1,4 +1,4 @@
-//! Shared protocol types for momoshell (Rust ↔ frontend).
+//! Shared protocol types for mshell (Rust ↔ frontend).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -281,7 +281,7 @@ mod tests {
             port: 22,
             username: "root".into(),
             auth: AuthMethod::Password {
-                credential_id: "momoshell/nil/password".into(),
+                credential_id: "mshell/nil/password".into(),
             },
             group: Some("prod".into()),
             tags: vec![],

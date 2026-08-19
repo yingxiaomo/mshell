@@ -22,6 +22,8 @@ pub struct LocalSession {
     rx: Receiver<Vec<u8>>,
     /// Reader thread handle (joined on drop, best-effort).
     reader: Option<JoinHandle<()>>,
+    /// Second reader for child stderr (merged into `rx`; L5).
+    stderr_reader: Option<JoinHandle<()>>,
     /// Set once the reader thread observes EOF on child stdout.
     stdout_closed: bool,
 }
@@ -41,7 +43,10 @@ impl LocalSession {
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            // Merge stderr (piped + drained into the same channel) so child
+            // errors like PowerShell "command not found" reach the terminal
+            // instead of being silently discarded (L5).
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| CoreError::Other(format!("无法启动本地终端 {shell}: {e}")))?;
 
@@ -51,11 +56,16 @@ impl LocalSession {
         let stdout = child.stdout.take().ok_or_else(|| {
             CoreError::Other(format!("{shell}: failed to open stdout"))
         })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            CoreError::Other(format!("{shell}: failed to open stderr"))
+        })?;
 
-        // Drain stdout on a dedicated thread so the command loop never blocks
-        // in a pipe read while the child is idle. The thread exits on EOF (child
-        // stdout closed) or when the receiver is dropped.
+        // Drain stdout AND stderr on dedicated threads so the command loop never
+        // blocks in a pipe read while the child is idle. Each thread exits on EOF
+        // (child closes the pipe) or when the receiver is dropped. Stderr bytes
+        // are interleaved into the same output stream (best-effort ordering).
         let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let tx_err = tx.clone();
         let reader = std::thread::Builder::new()
             .name("local-stdout-reader".into())
             .spawn(move || {
@@ -75,12 +85,32 @@ impl LocalSession {
                 }
             })
             .map_err(|e| CoreError::Other(format!("spawn local reader: {e}")))?;
+        let stderr_reader = std::thread::Builder::new()
+            .name("local-stderr-reader".into())
+            .spawn(move || {
+                let mut stderr = stderr;
+                let mut buf = [0u8; 32 * 1024];
+                loop {
+                    match stderr.read(&mut buf) {
+                        Ok(0) => break,           // EOF: process closed stderr
+                        Ok(n) => {
+                            if tx_err.send(buf[..n].to_vec()).is_err() {
+                                break;            // receiver gone
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
+                    }
+                }
+            })
+            .map_err(|e| CoreError::Other(format!("spawn local stderr reader: {e}")))?;
 
         Ok(Self {
             child,
             stdin,
             rx,
             reader: Some(reader),
+            stderr_reader: Some(stderr_reader),
             stdout_closed: false,
         })
     }
@@ -140,8 +170,11 @@ impl Drop for LocalSession {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        // Reader thread exits once stdout closes (child killed) or rx drops.
+        // Reader threads exit once stderr/stdout close (child killed) or rx drops.
         if let Some(h) = self.reader.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.stderr_reader.take() {
             let _ = h.join();
         }
     }

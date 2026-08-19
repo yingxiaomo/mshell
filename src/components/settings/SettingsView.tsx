@@ -82,7 +82,7 @@ export function SettingsView() {
   // 导入的主题（localStorage 持久化）
   const [importedThemes, setImportedThemes] = useState<EditorTerminalTheme[]>(() => {
     try {
-      const raw = localStorage.getItem("momoshell.imported-themes.v1");
+      const raw = localStorage.getItem("mshell.imported-themes.v1");
       if (raw) return JSON.parse(raw);
     } catch { /* ignore */ }
     return [];
@@ -236,7 +236,7 @@ export function SettingsView() {
     try {
       const json = await cmd(commands.exportConnections, { includeSecrets, confirm: includeSecrets ? "EXPORT_SECRETS" : null });
       const stamp = new Date().toISOString().slice(0, 10);
-      downloadJson(`momoshell-connections-${stamp}.json`, json);
+      downloadJson(`mshell-connections-${stamp}.json`, json);
       setStatus(
         includeSecrets
           ? "已导出（仅含 credentialId，无明文密钥）"
@@ -350,7 +350,7 @@ export function SettingsView() {
                     if (!theme) { setStatus("无法解析该文件，请确保是 iTerm2 或 VS Code 主题 JSON"); return; }
                     const updated = [...importedThemes, theme];
                     setImportedThemes(updated);
-                    localStorage.setItem("momoshell.imported-themes.v1", JSON.stringify(updated));
+                    localStorage.setItem("mshell.imported-themes.v1", JSON.stringify(updated));
                     setStatus(`已导入主题：${theme.label}`);
                   } catch (err) {
                     setStatus(`导入失败：${err instanceof Error ? err.message : String(err)}`);
@@ -371,7 +371,7 @@ export function SettingsView() {
                   className="rounded px-2 py-1 text-xs text-zinc-500 hover:text-red-400"
                   onClick={() => {
                     setImportedThemes([]);
-                    localStorage.removeItem("momoshell.imported-themes.v1");
+                    localStorage.removeItem("mshell.imported-themes.v1");
                     setStatus("已清除导入的主题");
                   }}
                 >
@@ -591,7 +591,7 @@ export function SettingsView() {
 
         <Section title="安全">
           <p className="text-xs text-zinc-500">
-            清除 Windows 凭据管理器中由 momoshell 保存的密码与密钥口令（按已知连接记录遍历删除）。
+            清除 Windows 凭据管理器中由 mshell 保存的密码与密钥口令（按已知连接记录遍历删除）。
           </p>
           <button
             type="button"
@@ -605,7 +605,7 @@ export function SettingsView() {
 
         <Section title="密钥对">
           <p className="text-xs text-zinc-500">
-            生成一对新的 ed25519 密钥（默认 <code className="text-zinc-400">~/.ssh/momoshell_ed25519</code>，无口令）。
+            生成一对新的 ed25519 密钥（默认 <code className="text-zinc-400">~/.ssh/mshell_ed25519</code>，无口令）。
             生成后可复制公钥，或用「部署公钥」按钮推送到已连接的服务器。
           </p>
           <div className="flex flex-wrap gap-2">

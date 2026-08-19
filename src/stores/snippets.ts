@@ -15,8 +15,8 @@ export type Snippet = {
   lastUsed: number;
 };
 
-const STORAGE_KEY = "momoshell.snippets.v1";
-const STORE_KEY = "__momoshell_snippets_store_v2__";
+const STORAGE_KEY = "mshell.snippets.v1";
+const STORE_KEY = "__mshell_snippets_store_v2__";
 
 import { create } from "zustand";
 import { useSessionsStore } from "./sessions";

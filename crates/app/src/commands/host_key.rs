@@ -97,13 +97,13 @@ pub struct GeneratedKey {
 }
 
 /// Generate a new ed25519 keypair with `ssh-keygen` (no passphrase). `path` is
-/// the private-key path (default `~/.ssh/momoshell_ed25519`); refuses to
+/// the private-key path (default `~/.ssh/mshell_ed25519`); refuses to
 /// overwrite an existing file.
 #[tauri::command]
 pub fn generate_keypair(path: Option<String>, comment: Option<String>) -> Result<GeneratedKey, String> {
     let priv_path = match path {
         Some(p) if !p.trim().is_empty() => PathBuf::from(p.trim()),
-        _ => home_dir()?.join(".ssh").join("momoshell_ed25519"),
+        _ => home_dir()?.join(".ssh").join("mshell_ed25519"),
     };
     if priv_path.exists() {
         return Err(map_err_str(format!("密钥已存在：{}", priv_path.display())));
@@ -111,7 +111,7 @@ pub fn generate_keypair(path: Option<String>, comment: Option<String>) -> Result
     if let Some(parent) = priv_path.parent() {
         std::fs::create_dir_all(parent).map_err(map_err_str)?;
     }
-    let comment = comment.filter(|c| !c.trim().is_empty()).unwrap_or_else(|| "momoshell".into());
+    let comment = comment.filter(|c| !c.trim().is_empty()).unwrap_or_else(|| "mshell".into());
     let status = std::process::Command::new("ssh-keygen")
         .args(["-t", "ed25519", "-N", "", "-q", "-C", &comment, "-f"])
         .arg(&priv_path)

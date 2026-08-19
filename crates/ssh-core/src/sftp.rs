@@ -239,6 +239,39 @@ fn collect_local(
     Ok(())
 }
 
+/// Validate an SFTP entry name for safe local join during directory download.
+///
+/// Only plain file/dir names are allowed: must be non-empty, not "." or "..",
+/// and must not contain path separators (`/`, `\`), drive letters, or any other
+/// component separator. This blocks malicious servers from writing outside the
+/// download target directory (path traversal) via names like `../evil` or
+/// `a/../../evil`.
+fn safe_entry_name(name: &str) -> Result<(), CoreError> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(CoreError::Other(format!(
+            "拒绝下载目录条目（不安全名称）：{name:?}"
+        )));
+    }
+    if name.contains('/') || name.contains('\\') || name.contains(':') {
+        return Err(CoreError::Other(format!(
+            "拒绝下载目录条目（含路径分隔符）：{name:?}"
+        )));
+    }
+    // Reject hidden Windows device names / reserved names that shadow local files.
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if RESERVED.contains(&stem.as_str()) {
+        return Err(CoreError::Other(format!(
+            "拒绝下载目录条目（Windows 保留名称）：{name:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// Walk a remote directory via SFTP, collecting (remote file, local path) pairs
 /// and total size.
 fn collect_remote(
@@ -254,6 +287,8 @@ fn collect_remote(
         if name == "." || name == ".." {
             continue;
         }
+        // Path-traversal guard: never trust server-provided entry names.
+        safe_entry_name(&name)?;
         let local = local_base.join(&name);
         if stat.is_dir() {
             collect_remote(sftp, &full, &local, out, total)?;

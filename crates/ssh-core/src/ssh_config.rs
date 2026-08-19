@@ -1,4 +1,4 @@
-//! OpenSSH-style `~/.ssh/config` parser (subset for momoshell import).
+//! OpenSSH-style `~/.ssh/config` parser (subset for mshell import).
 //!
 //! Supports: Host, HostName, User, Port, IdentityFile, CertificateFile,
 //! ProxyJump, ForwardAgent, Include. Line-based; expands leading `~` via

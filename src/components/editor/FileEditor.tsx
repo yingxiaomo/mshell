@@ -114,9 +114,16 @@ export function FileEditor({
   wordRef.current = wholeWord;
 
   // ── Base64 helpers (string ↔ base64 for SFTP) ───────────────────────
+  // Chunked encoding: spreading >~125KB of bytes into String.fromCharCode
+  // overflows the call stack (RangeError). Same chunking as events.ts.
   const b64Encode = (s: string) => {
     const bytes = new TextEncoder().encode(s);
-    return btoa(String.fromCharCode(...bytes));
+    const CHUNK = 0x8000;
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(bin);
   };
   const b64Decode = (b64: string) => {
     const bin = atob(b64);
@@ -329,6 +336,23 @@ export function FileEditor({
     return () => {
       cancelled = true;
       unsub();
+      // Flush any unsaved edits BEFORE the view is destroyed. This matters when
+      // switching sessions (Shell unmounts the whole editor pane for the inactive
+      // session) or closing the tab: without it, pending autosave edits between
+      // keystrokes and the debounce timer are silently lost.
+      const view = viewRef.current;
+      if (view) {
+        const content = view.state.doc.toString();
+        if (content !== baselineRef.current) {
+          void cmd(commands.sftpWriteText, {
+            sessionId,
+            remotePath,
+            contentB64: b64Encode(content),
+          }).catch(() => {
+            /* best-effort flush on unmount; remote may be unreachable */
+          });
+        }
+      }
       viewRef.current?.destroy();
       viewRef.current = null;
     };

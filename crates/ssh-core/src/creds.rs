@@ -1,7 +1,7 @@
 //! Windows Credential Manager helpers via the `keyring` crate.
 //!
-//! Secrets are stored under service name `"momoshell"` with target names like
-//! `momoshell/{connection_id}/password`. Retrieved secrets are wrapped in
+//! Secrets are stored under service name `"mshell"` with target names like
+//! `mshell/{connection_id}/password`. Retrieved secrets are wrapped in
 //! [`zeroize::Zeroizing`] so memory is wiped on drop.
 
 use keyring::Entry;
@@ -9,14 +9,14 @@ use zeroize::Zeroizing;
 
 use crate::error::CoreError;
 
-/// Service name used for all momoshell Credential Manager entries.
-pub const SERVICE_NAME: &str = "momoshell";
+/// Service name used for all mshell Credential Manager entries.
+pub const SERVICE_NAME: &str = "mshell";
 
 /// Build the credential id (keyring user/target) for a connection password.
 ///
-/// Format: `momoshell/{connection_id}/password`
+/// Format: `mshell/{connection_id}/password`
 pub fn password_credential_id(connection_id: uuid::Uuid) -> String {
-    format!("momoshell/{connection_id}/password")
+    format!("mshell/{connection_id}/password")
 }
 
 /// Alias used in the task brief / plan interface list.
@@ -52,7 +52,7 @@ pub fn delete_secret(credential_id: &str) -> Result<(), CoreError> {
     }
 }
 
-/// Best-effort clear of all momoshell secrets.
+/// Best-effort clear of all mshell secrets.
 ///
 /// # Windows / keyring limits
 ///
@@ -66,7 +66,7 @@ pub fn delete_secret(credential_id: &str) -> Result<(), CoreError> {
 /// store and call [`delete_secret`] for each. This helper is a documented
 /// placeholder so callers have a single entry point; it currently succeeds
 /// without deleting anything. Prefer [`delete_secret`] with known ids.
-pub fn clear_all_momoshell_secrets() -> Result<(), CoreError> {
+pub fn clear_all_mshell_secrets() -> Result<(), CoreError> {
     // Intentionally no-op: see module docs / function docs for Windows limits.
     Ok(())
 }
@@ -108,7 +108,7 @@ mod tests {
         let id = Uuid::nil();
         assert_eq!(
             password_credential_id(id),
-            "momoshell/00000000-0000-0000-0000-000000000000/password"
+            "mshell/00000000-0000-0000-0000-000000000000/password"
         );
     }
 
@@ -116,8 +116,8 @@ mod tests {
     fn password_credential_id_uses_hyphenated_uuid() {
         let id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let s = password_credential_id(id);
-        assert_eq!(s, format!("momoshell/{id}/password"));
-        assert!(s.starts_with("momoshell/"));
+        assert_eq!(s, format!("mshell/{id}/password"));
+        assert!(s.starts_with("mshell/"));
         assert!(s.ends_with("/password"));
         assert!(!s.contains('{'));
     }
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn clear_all_is_best_effort_ok() {
-        assert!(clear_all_momoshell_secrets().is_ok());
+        assert!(clear_all_mshell_secrets().is_ok());
     }
 
     /// Touches real Windows Credential Manager — run with:
@@ -142,7 +142,7 @@ mod tests {
     #[ignore = "requires OS credential store (Windows Credential Manager)"]
     fn keyring_set_get_delete_roundtrip() {
         let id = format!(
-            "momoshell/test-{}/password",
+            "mshell/test-{}/password",
             Uuid::new_v4()
         );
         set_secret(&id, "s3cret-test-value").expect("set");

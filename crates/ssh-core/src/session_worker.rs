@@ -69,6 +69,10 @@ impl Drop for JumpHold {
 
 struct ShellChannelPair {
     channel: Channel,
+    /// Bytes queued for stdin that couldn't be written yet (send window full).
+    /// Flushed on each poll tick so pasted/large input is never silently dropped
+    /// when the remote's window briefly fills (M8).
+    pending_input: Vec<u8>,
 }
 
 /// An in-flight exec command being polled asynchronously alongside I/O.
@@ -86,6 +90,10 @@ const EXEC_TIMEOUT: Duration = Duration::from_secs(60);
 /// Upper bound on accumulated exec output (stdout+stderr) before aborting, so a
 /// high-volume command cannot grow memory without limit.
 const EXEC_MAX_OUTPUT: usize = 16 * 1024 * 1024;
+
+/// SSH keepalive interval (s). Must match `keepalive_config(15, _)` set in
+/// [`establish_session_on_tcp`]; the throttle here skips per-tick calls.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 // ============================================================================
 // Top-level worker entry points (called via thread::spawn)
@@ -136,15 +144,15 @@ pub(crate) fn session_worker(
 /// Inputs needed to (re)establish a fully-authenticated session for the same
 /// endpoint — used to give SFTP and tunnels their own isolated connections.
 #[derive(Clone)]
-struct SessionFactory {
-    chain: Vec<Connection>,
-    policy: KnownHostsPolicy,
-    known_hosts_path: PathBuf,
-    timeout: Duration,
+pub(crate) struct SessionFactory {
+    pub(crate) chain: Vec<Connection>,
+    pub(crate) policy: KnownHostsPolicy,
+    pub(crate) known_hosts_path: PathBuf,
+    pub(crate) timeout: Duration,
 }
 
 impl SessionFactory {
-    fn establish(&self) -> Result<(Session, JumpHold), CoreError> {
+    pub(crate) fn establish(&self) -> Result<(Session, JumpHold), CoreError> {
         establish_session_chain(&self.chain, self.policy, &self.known_hosts_path, self.timeout)
     }
 
@@ -519,29 +527,52 @@ fn open_local_relay_to(
     let handle = thread::Builder::new()
         .name("proxyjump-relay".into())
         .spawn(move || {
-            // One accept is enough for the target session lifetime.
-            let _ = listener.set_nonblocking(false);
-            let Ok((client, _)) = listener.accept() else {
-                return;
-            };
-            if stop_c.load(Ordering::Relaxed) {
-                return;
-            }
-            let _ = client.set_read_timeout(Some(timeout));
-            let _ = client.set_write_timeout(Some(timeout));
+            // Poll-accept so `stop` is honored even before any client connects:
+            // if the caller's connect fails, the thread exits promptly instead of
+            // leaking a blocked accept() forever.
+            loop {
+                if stop_c.load(Ordering::Relaxed) {
+                    return;
+                }
+                let _ = listener.set_nonblocking(true);
+                match listener.accept() {
+                    Ok((client, _)) => {
+                        if stop_c.load(Ordering::Relaxed) {
+                            let _ = client.shutdown(std::net::Shutdown::Both);
+                            return;
+                        }
+                        let _ = client.set_read_timeout(Some(timeout));
+                        let _ = client.set_write_timeout(Some(timeout));
 
-            bastion.set_blocking(true);
-            let channel = bastion.channel_direct_tcpip(&rh, rp, Some(("127.0.0.1", 0)));
-            bastion.set_blocking(false);
-            let Ok(channel) = channel else {
-                return;
-            };
-            // Reuse tunnel relay (poll loop; works with mixed blocking modes).
-            tunnel::relay_bidirectional(client, channel, &stop_c);
+                        bastion.set_blocking(true);
+                        let channel = bastion.channel_direct_tcpip(&rh, rp, Some(("127.0.0.1", 0)));
+                        bastion.set_blocking(false);
+                        let Ok(channel) = channel else {
+                            let _ = client.shutdown(std::net::Shutdown::Both);
+                            return;
+                        };
+                        // Reuse tunnel relay (poll loop; works with mixed blocking modes).
+                        tunnel::relay_bidirectional(client, channel, &stop_c);
+                        return;
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => return,
+                }
+            }
         })
         .map_err(|e| CoreError::Other(format!("spawn jump relay: {e}")))?;
 
-    let stream = TcpStream::connect_timeout(&local_addr, timeout).map_err(CoreError::Io)?;
+    let stream = match TcpStream::connect_timeout(&local_addr, timeout) {
+        Ok(s) => s,
+        Err(e) => {
+            // Connect failed (e.g. timeout): stop the polling relay thread so it
+            // doesn't leak waiting on accept() for the lifetime of the process.
+            stop.store(true, Ordering::Relaxed);
+            return Err(CoreError::Io(e));
+        }
+    };
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     Ok((stream, stop, handle))
@@ -561,6 +592,11 @@ fn establish_session_on_tcp(
     // the TCP socket timeout.  Without this, sess.handshake() can block
     // forever if the remote accepts TCP but never responds to SSH KEX init.
     sess.set_timeout(30_000); // libssh2 internal timeout (ms)
+    // Enable keepalives for real: libssh2's `keepalive_send()` only transmits a
+    // packet once the configured interval elapses — with no `set_keepalive`
+    // call it is a no-op and NAT/server idle timeouts silently drop the
+    // connection. 15s keeps well under typical NAT limits.
+    sess.set_keepalive(true, 15);
     let _ = tcp.set_write_timeout(Some(Duration::from_secs(30)));
     let _ = tcp.set_read_timeout(Some(Duration::from_secs(30)));
     sess.set_tcp_stream(tcp);
@@ -644,6 +680,7 @@ fn run_cmd_loop(
     // Once a shell channel has existed, an empty channel map means the shell
     // closed (user `exit`, server drop) → the session is finished.
     let mut had_channel = false;
+    let mut last_keepalive = Instant::now();
 
     let reason: String = 'outer: loop {
         // --- drain pending commands (short wait, then non-blocking) ---
@@ -675,7 +712,13 @@ fn run_cmd_loop(
         }
 
         // --- poll channel I/O ---
-        let _ = sess.keepalive_send();
+        // Keepalive is throttled: libssh2 only transmits when the configured
+        // interval (15s) has elapsed, but skip the per-tick call anyway to avoid
+        // useless repeated checks on busy sessions.
+        if last_keepalive.elapsed() >= KEEPALIVE_INTERVAL {
+            let _ = sess.keepalive_send();
+            last_keepalive = Instant::now();
+        }
 
         let mut closed: Vec<Uuid> = Vec::new();
         for (channel_id, pair) in channels.iter_mut() {
@@ -729,6 +772,10 @@ fn run_cmd_loop(
                     data: acc,
                 });
             }
+
+            // Flush queued stdin bytes (pastes / large input blocked by a full
+            // remote send window on a previous tick).
+            flush_pending_input(pair);
 
             if pair.channel.eof() {
                 closed.push(*channel_id);
@@ -793,13 +840,36 @@ fn route_cmd(
             }
             _ => {}
         }
+        // Drop flags for transfers that already finished (avoids unbounded
+        // growth for long-lived sessions with many sequential transfers).
+        transfer_cancels.retain(|id, _| transfers.is_tracked(*id));
         let tx = ensure_sftp_worker(sftp_worker, factory, session_id, event_tx, transfers);
-        let _ = tx.send(cmd);
+        match tx.send(cmd) {
+            Ok(()) => {}
+            Err(flume::SendError(cmd)) => {
+                let err = CoreError::Other("SFTP 子线程已退出，命令未能投递".into());
+                // Failed to queue: reply the error + emit failed transfer event so
+                // callers don't hang forever (worker dead or never spawned).
+                fail_sftp_command(
+                    cmd,
+                    &err,
+                    session_id,
+                    event_tx.clone(),
+                    transfers,
+                );
+            }
+        }
         return None;
     }
     if is_tunnel_cmd(&cmd) {
         let tx = ensure_tunnel_worker(tunnel_worker, factory, session_id, event_tx);
-        let _ = tx.send(cmd);
+        match tx.send(cmd) {
+            Ok(()) => {}
+            Err(flume::SendError(cmd)) => {
+                let err = CoreError::Other("隧道子线程已退出，命令未能投递".into());
+                fail_sftp_command(cmd, &err, session_id, event_tx.clone(), transfers);
+            }
+        }
         return None;
     }
 
@@ -811,7 +881,13 @@ fn route_cmd(
             sess.set_blocking(false);
             match result {
                 Ok((channel_id, channel)) => {
-                    channels.insert(channel_id, ShellChannelPair { channel });
+                    channels.insert(
+                        channel_id,
+                        ShellChannelPair {
+                            channel,
+                            pending_input: Vec::new(),
+                        },
+                    );
                     *had_channel = true;
                     let _ = reply.send(Ok(channel_id));
                 }
@@ -822,7 +898,11 @@ fn route_cmd(
         }
         SessionCmd::Write { channel_id, data } => {
             if let Some(pair) = channels.get_mut(&channel_id) {
-                let _ = terminal::try_write_all(&mut pair.channel, &data);
+                // Prepend the new bytes to any still-queued input and write as
+                // much as the window allows; the remainder is flushed on later
+                // poll ticks (never silently dropped).
+                pair.pending_input.extend_from_slice(&data);
+                flush_pending_input(pair);
             }
         }
         SessionCmd::Resize { channel_id, cols, rows } => {
@@ -873,19 +953,31 @@ fn ensure_sftp_worker(
     transfers: &Arc<TransferQueue>,
 ) -> flume::Sender<SessionCmd> {
     if let Some(w) = slot {
-        return w.tx.clone();
+        // Slot was previously poisoned by a failed spawn → retry once.
+        if w.handle.is_some() {
+            return w.tx.clone();
+        }
     }
     let (tx, rx) = flume::unbounded::<SessionCmd>();
     let factory = factory.clone();
     let ev = event_tx.clone();
     let transfers = Arc::clone(transfers);
-    let handle = thread::Builder::new()
+    match thread::Builder::new()
         .name(format!("sftp-session-{session_id}"))
         .spawn(move || sftp_worker_loop(session_id, factory, rx, ev, transfers))
-        .ok();
-    let tx_out = tx.clone();
-    *slot = Some(SubWorker { tx, handle });
-    tx_out
+    {
+        Ok(handle) => {
+            let tx_out = tx.clone();
+            *slot = Some(SubWorker {
+                tx,
+                handle: Some(handle),
+            });
+            tx_out
+        }
+        // Thread spawn failed (exhausted resources): keep the slot unset so the
+        // next command retries instead of being stuck on a dead worker forever.
+        Err(_) => tx,
+    }
 }
 
 /// Spawn (once) the tunnel sub-worker and return its command sender.
@@ -896,18 +988,29 @@ fn ensure_tunnel_worker(
     event_tx: &flume::Sender<SessionEvent>,
 ) -> flume::Sender<SessionCmd> {
     if let Some(w) = slot {
-        return w.tx.clone();
+        // Slot was previously poisoned by a failed spawn → retry once.
+        if w.handle.is_some() {
+            return w.tx.clone();
+        }
     }
     let (tx, rx) = flume::unbounded::<SessionCmd>();
     let factory = factory.clone();
     let ev = event_tx.clone();
-    let handle = thread::Builder::new()
+    match thread::Builder::new()
         .name(format!("tunnel-session-{session_id}"))
         .spawn(move || tunnel_worker_loop(session_id, factory, rx, ev))
-        .ok();
-    let tx_out = tx.clone();
-    *slot = Some(SubWorker { tx, handle });
-    tx_out
+    {
+        Ok(handle) => {
+            let tx_out = tx.clone();
+            *slot = Some(SubWorker {
+                tx,
+                handle: Some(handle),
+            });
+            tx_out
+        }
+        // Thread spawn failed: keep the slot unset so the next command retries.
+        Err(_) => tx,
+    }
 }
 
 /// SFTP sub-worker: owns a dedicated blocking SSH session; runs all SFTP ops
@@ -952,7 +1055,12 @@ fn sftp_worker_loop(
                         }
                         Err(e) => {
                             eprintln!("[sftp-session] establish failed: {e}");
-                            // Dropping the command's reply channel surfaces the error.
+                            // Reply with the error instead of silently dropping
+                            // the command, and emit a failed event + finish for
+                            // transfers so their state doesn't linger as running.
+                            // Only the SFTP sub-worker thread touches `cmd`, so
+                            // it is safe to consume it here.
+                            fail_sftp_command(cmd, &e, session_id, event_tx.clone(), &transfers);
                             continue;
                         }
                     }
@@ -981,10 +1089,96 @@ fn sftp_worker_loop(
     // `conn` (Session + JumpHold) drops here.
 }
 
+/// Reply to every SFTP command channel with `err` so callers never hang on a
+/// lost command, and emit a failure event + finish for transfer commands (their
+/// state must not linger as "running" when the SFTP connection cannot be
+/// established). Consumes `cmd` — only ever called on the SFTP worker thread.
+fn fail_sftp_command(
+    cmd: SessionCmd,
+    err: &CoreError,
+    session_id: Uuid,
+    event_tx: flume::Sender<SessionEvent>,
+    transfers: &TransferQueue,
+) {
+    // CoreError isn't Clone (keyring::Error isn't), so rebuild an equivalent
+    // error for each reply channel.
+    let fail = CoreError::Other(err.to_string());
+    match cmd {
+        SessionCmd::OpenSftp { reply } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpList { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpMkdir { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpRm { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpRename { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpChmod { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpRealpath { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpUpload {
+            transfer_id, reply, ..
+        } => {
+            transfers.finish(transfer_id);
+            emit_transfer_failed(&event_tx, session_id, transfer_id, err);
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpDownload {
+            transfer_id, reply, ..
+        } => {
+            transfers.finish(transfer_id);
+            emit_transfer_failed(&event_tx, session_id, transfer_id, err);
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpRead { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::SftpWrite { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        // Tunnel commands can also fail to queue when the worker is dead.
+        SessionCmd::TunnelStart { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::TunnelStop { reply, .. } => {
+            let _ = reply.send(Err(fail));
+        }
+        SessionCmd::TunnelList { reply } => {
+            let _ = reply.send(Err(fail));
+        }
+        // Non-reply commands never reach a worker (Write/Resize/Shutdown/Exec 
+        // run on the main thread; OpenShell too).
+        _ => {}
+    }
+}
+
+/// Emit a `failed` TransferProgress event for a transfer that could not start.
+fn emit_transfer_failed(
+    event_tx: &flume::Sender<SessionEvent>,
+    session_id: Uuid,
+    transfer_id: Uuid,
+    err: &CoreError,
+) {
+    let _ = event_tx.send(SessionEvent::TransferProgress {
+        transfer_id,
+        session_id,
+        bytes: 0,
+        total: None,
+        status: "failed".into(),
+        error: Some(err.to_string()),
+    });
+}
+
 /// Cheap liveness probe for the dedicated SFTP session: a `stat("/")` round trip
-/// once SFTP is open, else a keepalive. Returns false if the connection is dead.
-/// The probe uses a short timeout so a dead connection is detected in seconds
-/// rather than stalling on the session's full 30s timeout.
 fn sftp_session_alive(conn: &Option<(Session, JumpHold)>, sftp: &Option<Sftp>) -> bool {
     match conn {
         None => false,
@@ -1009,7 +1203,7 @@ fn tunnel_worker_loop(
     cmd_rx: flume::Receiver<SessionCmd>,
     event_tx: flume::Sender<SessionEvent>,
 ) {
-    let (mut sess, hold) = match factory.establish_retry(3) {
+    let (sess, hold) = match factory.establish_retry(3) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[tunnel-session] establish failed: {e}");
@@ -1033,7 +1227,7 @@ fn tunnel_worker_loop(
             Ok(SessionCmd::Shutdown) => break,
             Ok(SessionCmd::TunnelStart { config, reply }) => {
                 let r = start_tunnel(
-                    &mut sess, session_id, config, &mut local_tunnels, &mut remote_tunnels, &event_tx,
+                    session_id, &factory, config, &mut local_tunnels, &mut remote_tunnels, &event_tx,
                 );
                 let _ = reply.send(r);
             }
@@ -1058,7 +1252,6 @@ fn tunnel_worker_loop(
             Err(flume::RecvTimeoutError::Timeout) => {}
             Err(flume::RecvTimeoutError::Disconnected) => break,
         }
-        poll_remote_tunnels(&mut sess, &mut remote_tunnels);
     }
 
     stop_all_tunnels(&mut local_tunnels, &mut remote_tunnels);
@@ -1074,6 +1267,27 @@ fn poll_pending_execs(pending: &mut Vec<PendingExec>, read_buf: &mut [u8]) {
         loop {
             match exec.channel.read(read_buf) {
                 Ok(0) => {
+                    // stdout EOF. Drain any remaining stderr before settling:
+                    // a final stderr write (e.g. a trailing "command not found"
+                    // diagnostic) can arrive after stdout closes, and the old
+                    // code sent the result here immediately, losing that tail.
+                    loop {
+                        match exec.channel.stderr().read(read_buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                exec.output.extend_from_slice(&read_buf[..n]);
+                                if exec.output.len() > EXEC_MAX_OUTPUT {
+                                    let _ = exec.channel.close();
+                                    let _ = exec.reply.send(Err(CoreError::Other(
+                                        "exec output exceeded 16 MiB cap".into(),
+                                    )));
+                                    return false;
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(_) => break,
+                        }
+                    }
                     let out = std::mem::take(&mut exec.output);
                     let _ = exec.reply.send(Ok(String::from_utf8_lossy(&out).into_owned()));
                     return false;
@@ -1151,6 +1365,30 @@ fn dispatch_exec(sess: &mut Session, cmd: SessionCmd, pending: &mut Vec<PendingE
             sess.set_blocking(false);
             eprintln!("[exec-dispatch] channel setup failed: {e}");
             let _ = reply.send(Err(e));
+        }
+    }
+}
+
+/// Write queued stdin bytes to the channel; keeps whatever still won't fit for
+/// the next tick. Must run on the session worker thread (owns the Channel).
+fn flush_pending_input(pair: &mut ShellChannelPair) {
+    if pair.pending_input.is_empty() {
+        return;
+    }
+    match terminal::try_write(&mut pair.channel, &pair.pending_input) {
+        Ok(remaining) => {
+            if remaining == 0 {
+                pair.pending_input.clear();
+            } else {
+                // Keep only the tail that still couldn't be written.
+                pair.pending_input.drain(..pair.pending_input.len() - remaining);
+            }
+        }
+        Err(e) => {
+            // Fatal channel error: drop the queue so we don't retry forever on a
+            // dead channel; the connection teardown will surface the error.
+            eprintln!("[ssh] input write failed, dropping {} queued bytes: {e}", pair.pending_input.len());
+            pair.pending_input.clear();
         }
     }
 }
@@ -1320,8 +1558,8 @@ fn emit_tunnel_status(event_tx: &flume::Sender<SessionEvent>, status: TunnelStat
 }
 
 fn start_tunnel(
-    sess: &mut Session,
     session_id: Uuid,
+    factory: &SessionFactory,
     config: TunnelConfig,
     local_tunnels: &mut HashMap<Uuid, LocalTunnelHandle>,
     remote_tunnels: &mut HashMap<Uuid, RemoteTunnelHandle>,
@@ -1343,7 +1581,7 @@ fn start_tunnel(
         } => {
             let listener = tunnel::bind_listener(local_host, *local_port)?;
             let stop = Arc::new(AtomicBool::new(false));
-            let sess_c = sess.clone();
+            let factory_c = factory.clone();
             let stop_c = Arc::clone(&stop);
             let rh = remote_host.clone();
             let rp = *remote_port;
@@ -1352,7 +1590,7 @@ fn start_tunnel(
             let thread = thread::Builder::new()
                 .name(format!("tunnel-local-{id}"))
                 .spawn(move || {
-                    tunnel::run_local_forward_loop(sess_c, listener, rh, rp, stop_c);
+                    tunnel::run_local_forward_loop(factory_c, listener, rh, rp, stop_c);
                 })
                 .map_err(|e| CoreError::Other(format!("spawn tunnel thread: {e}")))?;
 
@@ -1380,14 +1618,14 @@ fn start_tunnel(
         } => {
             let listener = tunnel::bind_listener(local_host, *local_port)?;
             let stop = Arc::new(AtomicBool::new(false));
-            let sess_c = sess.clone();
+            let factory_c = factory.clone();
             let stop_c = Arc::clone(&stop);
             let bind_host = local_host.clone();
             let bind_port = *local_port;
             let thread = thread::Builder::new()
                 .name(format!("tunnel-dynamic-{id}"))
                 .spawn(move || {
-                    tunnel::run_dynamic_forward_loop(sess_c, listener, stop_c);
+                    tunnel::run_dynamic_forward_loop(factory_c, listener, stop_c);
                 })
                 .map_err(|e| CoreError::Other(format!("spawn tunnel thread: {e}")))?;
 
@@ -1415,46 +1653,40 @@ fn start_tunnel(
             local_host,
             local_port,
         } => {
-            // Best-effort remote forward via libssh2 channel_forward_listen.
-            sess.set_blocking(true);
-            let result = sess.channel_forward_listen(
-                *remote_port,
-                Some(remote_host.as_str()),
-                Some(16),
+            // Remote forward runs on its own thread with its own authenticated
+            // session (see tunnel::run_remote_forward_loop): the session worker
+            // thread keeps polling *its* session, and libssh2 sessions must not
+            // be shared across threads. `remote_host`/`remote_port` ride along
+            // inside `config`; only the local target is needed here for status.
+            let _ = (remote_host, remote_port);
+            let stop = Arc::new(AtomicBool::new(false));
+            let factory_c = factory.clone();
+            let stop_c = Arc::clone(&stop);
+            let config_c = config.clone();
+            let thread = thread::Builder::new()
+                .name(format!("tunnel-remote-{id}"))
+                .spawn(move || {
+                    tunnel::run_remote_forward_loop(factory_c, config_c, stop_c);
+                })
+                .map_err(|e| CoreError::Other(format!("spawn remote tunnel thread: {e}")))?;
+
+            let info = TunnelRuntimeInfo {
+                config: config.clone(),
+                state: TunnelState::Running,
+                error: None,
+            };
+            emit_tunnel_status(event_tx, info.to_status(session_id));
+            remote_tunnels.insert(
+                id,
+                RemoteTunnelHandle {
+                    info,
+                    local_host: local_host.clone(),
+                    local_port: *local_port,
+                    stop,
+                    thread: Some(thread),
+                },
             );
-            sess.set_blocking(false);
-            match result {
-                Ok((listener, _bound)) => {
-                    let stop = Arc::new(AtomicBool::new(false));
-                    let info = TunnelRuntimeInfo {
-                        config: config.clone(),
-                        state: TunnelState::Running,
-                        error: None,
-                    };
-                    emit_tunnel_status(event_tx, info.to_status(session_id));
-                    remote_tunnels.insert(
-                        id,
-                        RemoteTunnelHandle {
-                            info,
-                            listener,
-                            local_host: local_host.clone(),
-                            local_port: *local_port,
-                            stop,
-                        },
-                    );
-                    Ok(())
-                }
-                Err(e) => {
-                    let msg = format!("remote forward failed: {e}");
-                    let info = TunnelRuntimeInfo {
-                        config,
-                        state: TunnelState::Error,
-                        error: Some(msg.clone()),
-                    };
-                    emit_tunnel_status(event_tx, info.to_status(session_id));
-                    Err(CoreError::Ssh(msg))
-                }
-            }
+            Ok(())
         }
     }
 }
@@ -1479,6 +1711,9 @@ fn stop_tunnel(
     }
     if let Some(mut h) = remote_tunnels.remove(&tunnel_id) {
         h.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = h.thread.take() {
+            let _ = t.join();
+        }
         h.info.state = TunnelState::Stopped;
         h.info.error = None;
         emit_tunnel_status(event_tx, h.info.to_status(session_id));
@@ -1503,41 +1738,17 @@ fn stop_all_tunnels(
             }
         }
     }
-    // Signal remote-forward relay threads (they hold a clone of this flag) before
-    // dropping the listeners, so in-flight inbound relays wind down.
+    // Signal remote-forward relay threads (they hold a clone of this flag) then
+    // join their dedicated threads, so in-flight inbound relays wind down.
     let remote_ids: Vec<Uuid> = remote_tunnels.keys().copied().collect();
     for id in remote_ids {
-        if let Some(h) = remote_tunnels.remove(&id) {
+        if let Some(mut h) = remote_tunnels.remove(&id) {
             h.stop.store(true, Ordering::Relaxed);
+            if let Some(t) = h.thread.take() {
+                let _ = t.join();
+            }
         }
     }
-}
-
-/// Non-blocking accept on remote-forward listeners; spawn relay per inbound.
-fn poll_remote_tunnels(
-    sess: &mut Session,
-    remote_tunnels: &mut HashMap<Uuid, RemoteTunnelHandle>,
-) {
-    let prev_timeout = sess.timeout();
-    sess.set_timeout(1);
-    sess.set_blocking(true);
-    for h in remote_tunnels.values_mut() {
-        if h.stop.load(Ordering::Relaxed) {
-            continue;
-        }
-        if let Ok(channel) = h.listener.accept() {
-            let local_host = h.local_host.clone();
-            let local_port = h.local_port;
-            let stop = Arc::clone(&h.stop);
-            let _ = thread::Builder::new()
-                .name("tunnel-relay-remote".into())
-                .spawn(move || {
-                    tunnel::handle_remote_inbound(channel, &local_host, local_port, &stop);
-                });
-        }
-    }
-    sess.set_blocking(false);
-    sess.set_timeout(prev_timeout);
 }
 
 fn emit_transfer_result(
@@ -1598,7 +1809,7 @@ mod tests {
             port: 1,
             username: "u".into(),
             auth: AuthMethod::Password {
-                credential_id: "momoshell/nil/password".into(),
+                credential_id: "mshell/nil/password".into(),
             },
             group: None,
             tags: vec![],

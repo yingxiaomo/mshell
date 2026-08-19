@@ -34,7 +34,7 @@ export function AiChat() {
         const ep = await cmd(commands.aiGetEndpoint).catch(() => "");
         setDraftEndpoint(ep);
         // 恢复上次选中的模型
-        const saved = localStorage.getItem("momoshell.ai-model");
+        const saved = localStorage.getItem("mshell.ai-model");
         if (saved) setModel(saved);
         // 拉取模型列表
         try {
@@ -239,7 +239,7 @@ export function AiChat() {
       <div className="border-t border-zinc-800 px-3 py-2 space-y-2">
         {hasKey && (
           <div className="flex items-center gap-1.5">
-            <select value={model} onChange={(e) => { setModel(e.target.value); localStorage.setItem("momoshell.ai-model", e.target.value); }}
+            <select value={model} onChange={(e) => { setModel(e.target.value); localStorage.setItem("mshell.ai-model", e.target.value); }}
               className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-400 outline-none"
             >
               {models.length === 0 && <option value="">加载模型列表…</option>}

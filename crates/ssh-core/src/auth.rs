@@ -7,6 +7,7 @@ use std::path::Path;
 
 use protocol::{AuthMethod, Connection};
 use ssh2::Session;
+use zeroize::Zeroizing;
 
 use crate::creds;
 use crate::error::CoreError;
@@ -26,7 +27,9 @@ pub fn authenticate(sess: &Session, conn: &Connection) -> Result<(), CoreError> 
             // usually just re-prompts for the same password.
             let _ = sess.userauth_password(&conn.username, secret.as_str());
             if !sess.authenticated() {
-                let mut prompt = PasswordPrompt { password: secret.to_string() };
+                // Zeroizing: the plain String clone of the secret is wiped when
+                // the prompter drops, keeping the password out of slack memory.
+                let mut prompt = PasswordPrompt { password: Zeroizing::new(secret.as_str().to_string()) };
                 let _ = sess.userauth_keyboard_interactive(&conn.username, &mut prompt);
             }
             ensure_authenticated(sess, "password rejected")
@@ -76,8 +79,12 @@ pub fn authenticate(sess: &Session, conn: &Connection) -> Result<(), CoreError> 
 /// Keyboard-interactive prompter that answers every prompt with the stored
 /// password (covers the common single-prompt case where a server routes
 /// password auth through keyboard-interactive).
+///
+/// The password is held in a `Zeroizing` buffer so it is scrubbed from memory
+/// when the prompter is dropped (L4: the previous plain `String` clone stayed
+/// in heap slack after auth completed).
 struct PasswordPrompt {
-    password: String,
+    password: Zeroizing<String>,
 }
 
 impl ssh2::KeyboardInteractivePrompt for PasswordPrompt {
@@ -87,7 +94,7 @@ impl ssh2::KeyboardInteractivePrompt for PasswordPrompt {
         _instructions: &str,
         prompts: &[ssh2::Prompt<'a>],
     ) -> Vec<String> {
-        prompts.iter().map(|_| self.password.clone()).collect()
+        prompts.iter().map(|_| self.password.as_str().to_string()).collect()
     }
 }
 

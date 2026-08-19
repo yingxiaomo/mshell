@@ -192,7 +192,7 @@ function TerminalStatusBar() {
       return;
     }
     try {
-      // No dialog: auto-save under <Documents>/momoshell-logs and report the path.
+      // No dialog: auto-save under <Documents>/mshell-logs and report the path.
       const path = await cmd(commands.sessionLogStart, { sessionId: sid });
       setLogging((s) => new Set(s).add(sid));
       showToast(`开始记录会话日志 → ${path}`, "info");

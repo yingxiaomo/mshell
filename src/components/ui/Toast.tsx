@@ -17,7 +17,7 @@ type ToastState = {
   dismiss: (id: string) => void;
 };
 
-const TOAST_KEY = "__momoshell_toast_store_v1__";
+const TOAST_KEY = "__mshell_toast_store_v1__";
 type GlobalBag = typeof globalThis & {
   [TOAST_KEY]?: ToastState;
 };

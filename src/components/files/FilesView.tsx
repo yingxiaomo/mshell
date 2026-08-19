@@ -63,8 +63,13 @@ export function FilesView() {
   const cwdRef = useRef(cwd);
   activeRef.current = active;
   cwdRef.current = cwd;
+  // In-flight guard: each refresh bumps a generation; stale responses (from a
+  // previous session/path) are discarded so an old listing never overwrites the
+  // view after the user switched sessions (MonitorView's isStale() pattern).
+  const listGenRef = useRef(0);
 
   const refresh = useCallback(async (sessionId: string, dir: string) => {
+    const gen = ++listGenRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -81,27 +86,37 @@ export function FilesView() {
           resolved = dirPath; // realpath unsupported/flaky — use the path as-is
         }
       }
+      if (gen !== listGenRef.current) return; // superseded
       setCwd(resolved);
       const list = await cmd(commands.sftpList, { sessionId, path: resolved });
+      if (gen !== listGenRef.current) return; // superseded
       list.sort((a, b) => {
         if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
       setEntries(list);
     } catch (e) {
+      if (gen !== listGenRef.current) return; // superseded
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (gen === listGenRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     if (!active || active.disconnected || active.connecting) {
+      // Invalidate any in-flight listing so it cannot repopulate the view.
+      listGenRef.current += 1;
       setEntries([]);
       setCwd("");
       return;
     }
     void refresh(active.sessionId, cwd || ".");
+    return () => {
+      // Invalidate the in-flight listing when the session/phase changes so a
+      // slow response can't repopulate the view for a now-inactive session.
+      listGenRef.current += 1;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.sessionId, active?.disconnected]);
 

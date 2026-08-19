@@ -1,14 +1,14 @@
 [package]
-name = "momoshell"
+name = "mshell"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "momoshell_lib"
+name = "mshell_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "momoshell"
+name = "mshell"
 path = "src/main.rs"
 
 [build-dependencies]

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 pub fn app_data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("momoshell")
+        .join("mshell")
 }
 
 pub fn connections_path() -> PathBuf {
@@ -22,6 +22,6 @@ mod tests {
     fn paths_end_with_expected_names() {
         assert!(connections_path().ends_with("connections.json"));
         assert!(settings_path().ends_with("settings.json"));
-        assert!(app_data_dir().ends_with("momoshell"));
+        assert!(app_data_dir().ends_with("mshell"));
     }
 }

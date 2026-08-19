@@ -13,8 +13,8 @@ export type Trigger = {
   updatedAt: number;
 };
 
-const STORAGE_KEY = "momoshell.triggers.v1";
-const STORE_KEY = "__momoshell_triggers_store_v1__";
+const STORAGE_KEY = "mshell.triggers.v1";
+const STORE_KEY = "__mshell_triggers_store_v1__";
 
 import { create } from "zustand";
 

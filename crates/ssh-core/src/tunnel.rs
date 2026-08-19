@@ -73,13 +73,16 @@ pub struct LocalTunnelHandle {
     pub thread: Option<thread::JoinHandle<()>>,
 }
 
-/// Remote forward: listener lives on the session worker (same thread as Session).
+/// Remote forward: listener + accept + relay live on a dedicated thread that
+/// owns its own authenticated SSH connection (via `SessionFactory`), so the
+/// session is never shared with the tunnel worker thread.
 pub struct RemoteTunnelHandle {
     pub info: TunnelRuntimeInfo,
-    pub listener: ssh2::Listener,
     pub local_host: String,
     pub local_port: u16,
     pub stop: Arc<AtomicBool>,
+    /// Joined on stop/shutdown (best-effort).
+    pub thread: Option<thread::JoinHandle<()>>,
 }
 
 /// Parse bind host:port from tunnel config fields.
@@ -329,52 +332,74 @@ pub fn open_direct_tcpip_relay(
 }
 
 /// Local-forward accept loop (companion thread).
-pub fn run_local_forward_loop(
-    sess: Session,
+///
+/// Each accepted connection opens its **own** SSH connection via `factory` and
+/// relays through it. Libssh2 sessions are not safe for concurrent use by
+/// multiple threads, and the tunnel worker thread keeps polling the session it
+/// owns — so sharing that session with relay threads would be a data race. A
+/// dedicated connection per relay keeps every session single-threaded.
+pub(crate) fn run_local_forward_loop(
+    factory: crate::session_worker::SessionFactory,
     listener: TcpListener,
     remote_host: String,
     remote_port: u16,
     stop: Arc<AtomicBool>,
 ) {
+    // Non-blocking + poll: `stop` is honored within one poll cycle without
+    // relying on wake_listener reaching the bound port (which fails for
+    // local_port=0 / 0.0.0.0 and would deadlock the join in stop_tunnel).
+    let _ = listener.set_nonblocking(true);
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _peer)) => {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
-                let sess_c = sess.clone();
+                let f = factory.clone();
                 let rh = remote_host.clone();
                 let stop_c = Arc::clone(&stop);
                 let _ = thread::Builder::new()
                     .name("tunnel-relay-local".into())
                     .spawn(move || {
-                        let _ = open_direct_tcpip_relay(
-                            &sess_c, &rh, remote_port, stream, &stop_c,
-                        );
+                        match f.establish() {
+                            Ok((sess, _hold)) => {
+                                let _ = open_direct_tcpip_relay(
+                                    &sess, &rh, remote_port, stream, &stop_c,
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("[tunnel-relay] establish failed: {e}");
+                                let _ = stream.shutdown(Shutdown::Both);
+                            }
+                        }
                     });
             }
-            Err(e) => {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                if e.kind() != io::ErrorKind::Interrupted {
-                    thread::sleep(Duration::from_millis(50));
-                }
+            Err(_) => {
+                // WouldBlock (no pending connection) or transient error.
+                // Never busy-spin: 50ms poll keeps stop latency snappy while
+                // costing almost no CPU on idle tunnels.
+                thread::sleep(Duration::from_millis(50));
             }
         }
     }
 }
 
-/// Dynamic SOCKS5 accept loop.
-pub fn run_dynamic_forward_loop(sess: Session, listener: TcpListener, stop: Arc<AtomicBool>) {
+/// Dynamic SOCKS5 accept loop (dedicated SSH connection per relay, see
+/// [`run_local_forward_loop`] for the threading rationale).
+pub(crate) fn run_dynamic_forward_loop(
+    factory: crate::session_worker::SessionFactory,
+    listener: TcpListener,
+    stop: Arc<AtomicBool>,
+) {
     let bound_addr = listener.local_addr().ok();
+    let _ = listener.set_nonblocking(true);
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((mut stream, _peer)) => {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
-                let sess_c = sess.clone();
+                let f = factory.clone();
                 let stop_c = Arc::clone(&stop);
                 let bound = bound_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
                 let _ = thread::Builder::new()
@@ -384,9 +409,17 @@ pub fn run_dynamic_forward_loop(sess: Session, listener: TcpListener, stop: Arc<
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
                         match socks5_handshake(&mut stream, &bound) {
                             Ok((host, port)) => {
-                                let _ = open_direct_tcpip_relay(
-                                    &sess_c, &host, port, stream, &stop_c,
-                                );
+                                match f.establish() {
+                                    Ok((sess, _hold)) => {
+                                        let _ = open_direct_tcpip_relay(
+                                            &sess, &host, port, stream, &stop_c,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[tunnel-relay] establish failed: {e}");
+                                        let _ = stream.shutdown(Shutdown::Both);
+                                    }
+                                }
                             }
                             Err(_) => {
                                 let _ = stream.shutdown(Shutdown::Both);
@@ -394,19 +427,17 @@ pub fn run_dynamic_forward_loop(sess: Session, listener: TcpListener, stop: Arc<
                         }
                     });
             }
-            Err(e) => {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                if e.kind() != io::ErrorKind::Interrupted {
-                    thread::sleep(Duration::from_millis(50));
-                }
+            Err(_) => {
+                thread::sleep(Duration::from_millis(50));
             }
         }
     }
 }
 
 /// Handle one remote-forwarded inbound channel: connect local and relay.
+///
+/// Must run on the thread that owns the channel's session (libssh2 sessions
+/// are not safe for concurrent use).
 pub fn handle_remote_inbound(
     channel: Channel,
     local_host: &str,
@@ -422,6 +453,72 @@ pub fn handle_remote_inbound(
         Err(_) => {
             let mut channel = channel;
             let _ = channel.close();
+        }
+    }
+}
+
+/// Remote-forward loop on a dedicated thread owning its **own** authenticated
+/// SSH connection (established via `factory`).
+///
+/// Accept and relay run sequentially on this single thread: the session is
+/// never shared with the tunnel worker thread (which keeps polling its own
+/// session), eliminating the previous cross-thread data race. One inbound
+/// connection is serviced at a time — acceptable for remote forwards and far
+/// better than racing the session.
+pub(crate) fn run_remote_forward_loop(
+    factory: crate::session_worker::SessionFactory,
+    config: TunnelConfig,
+    stop: Arc<AtomicBool>,
+) {
+    let (remote_host, remote_port, local_host, local_port) = match &config.kind {
+        TunnelType::Remote {
+            remote_host,
+            remote_port,
+            local_host,
+            local_port,
+        } => (
+            remote_host.clone(),
+            *remote_port,
+            local_host.clone(),
+            *local_port,
+        ),
+        _ => {
+            eprintln!("[tunnel-remote] not a remote config; exiting");
+            return;
+        }
+    };
+
+    let (sess, _hold) = match factory.establish() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[tunnel-remote] establish failed: {e}");
+            return;
+        }
+    };
+
+    sess.set_blocking(true);
+    let (mut listener, _bound) = match sess.channel_forward_listen(
+        remote_port,
+        Some(remote_host.as_str()),
+        Some(16),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[tunnel-remote] forward listen failed: {e}");
+            return;
+        }
+    };
+    // 1ms poll so `stop` is honored promptly (accept returns on timeout).
+    sess.set_timeout(1);
+
+    while !stop.load(Ordering::Relaxed) {
+        match listener.accept() {
+            Ok(channel) => {
+                handle_remote_inbound(channel, &local_host, local_port, &stop);
+            }
+            Err(_) => {
+                // Timeout / transient error — loop again to check stop.
+            }
         }
     }
 }

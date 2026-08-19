@@ -85,7 +85,7 @@ export function SessionList() {
     null,
   );
   const [dismissedTip, setDismissedTip] = useState(
-    () => localStorage.getItem('momoshell.dismissedFirstTip') === 'true'
+    () => localStorage.getItem('mshell.dismissedFirstTip') === 'true'
   );
   const [collapsedGroups, setCollapsedGroups] = useState<
     Record<string, boolean>
@@ -475,7 +475,7 @@ export function SessionList() {
                 type="button"
                 className="shrink-0 rounded px-1 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
                 onClick={() => {
-                  localStorage.setItem('momoshell.dismissedFirstTip', 'true');
+                  localStorage.setItem('mshell.dismissedFirstTip', 'true');
                   setDismissedTip(true);
                 }}
               >

@@ -249,7 +249,7 @@ pub async fn session_open_adhoc(
     let rows = rows.unwrap_or(24);
     let id = Uuid::new_v4();
 
-    let adhoc_cid = format!("momoshell/adhoc-{id}/password");
+    let adhoc_cid = format!("mshell/adhoc-{id}/password");
     let auth = match auth_type.as_str() {
         "agent" => protocol::AuthMethod::Agent,
         "key" => protocol::AuthMethod::PrivateKey {
@@ -392,7 +392,7 @@ pub async fn session_close(app: AppHandle, session_id: Uuid) -> Result<(), Strin
 }
 
 /// Begin recording a session's terminal output. With no `path`, a file is
-/// auto-created under `<Documents>/momoshell-logs/`. Returns the log file path.
+/// auto-created under `<Documents>/mshell-logs/`. Returns the log file path.
 #[tauri::command]
 pub fn session_log_start(
     app: AppHandle,
@@ -420,7 +420,7 @@ pub fn session_log_start(
     Ok(log_path.to_string_lossy().into_owned())
 }
 
-/// Default log path: `<Documents>/momoshell-logs/session-<short>-<timestamp>.log`.
+/// Default log path: `<Documents>/mshell-logs/session-<short>-<timestamp>.log`.
 fn default_log_path(app: &AppHandle, session_id: Uuid) -> Result<std::path::PathBuf, String> {
     use tauri::Manager;
     let base = app
@@ -430,7 +430,7 @@ fn default_log_path(app: &AppHandle, session_id: Uuid) -> Result<std::path::Path
         .map_err(|e| format!("找不到默认目录：{e}"))?;
     let short = &session_id.simple().to_string()[..8];
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    Ok(base.join("momoshell-logs").join(format!("session-{short}-{ts}.log")))
+    Ok(base.join("mshell-logs").join(format!("session-{short}-{ts}.log")))
 }
 
 /// Stop recording a session's terminal output (closes the file).

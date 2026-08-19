@@ -1,11 +1,20 @@
 //! AI chat proxy — calls Anthropic Claude / OpenAI APIs from the backend.
 //! Streams responses back to the frontend via Tauri events.
 
+use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-const KEY_ID: &str = "momoshell/nil/ai_key";
-const ENDPOINT_ID: &str = "momoshell/nil/ai_endpoint";
+const KEY_ID: &str = "mshell/nil/ai_key";
+const ENDPOINT_ID: &str = "mshell/nil/ai_endpoint";
+
+/// Total wall-clock budget for a single AI chat round-trip (connect + stream).
+/// The frontend applies its own per-request timeout, so this only guards the
+/// backend from hanging forever on a dead endpoint.
+const AI_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Upper bound on accumulated AI response text (tokens). Guard against a
+/// runaway or malicious endpoint streaming forever.
+const AI_MAX_OUTPUT: usize = 16 * 1024 * 1024;
 
 /// A chat message in the conversation.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -65,7 +74,12 @@ pub async fn ai_chat(
     endpoint: String,
     request_id: String,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    // Bound the whole round trip (connect + stream) so a dead endpoint cannot
+    // hang the frontend's "分析中…" state forever.
+    let client = reqwest::Client::builder()
+        .timeout(AI_TOTAL_TIMEOUT)
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败：{e}"))?;
     let is_claude = model.starts_with("claude");
 
     if !endpoint.trim().is_empty() {
@@ -231,8 +245,10 @@ async fn chat_custom(
         return Err(format!("API 错误 ({status})：{text}"));
     }
 
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    let full_text = parse_sse(&bytes, |delta| { let _ = app.emit("ai-chunk", serde_json::json!({ "requestId": request_id, "text": delta })); });
+    let full_text = stream_sse(resp, |delta| {
+        let _ = app.emit("ai-chunk", serde_json::json!({ "requestId": request_id, "text": delta }));
+    })
+    .await?;
 
     let _ = app.emit("ai-done", serde_json::json!({ "requestId": request_id, "text": full_text }));
     Ok(())
@@ -284,8 +300,10 @@ async fn chat_claude(
         return Err(format!("API 错误 ({status})：{text}"));
     }
 
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    let full_text = parse_sse(&bytes, |delta| { let _ = app.emit("ai-chunk", serde_json::json!({ "requestId": request_id, "text": delta })); });
+    let full_text = stream_sse(resp, |delta| {
+        let _ = app.emit("ai-chunk", serde_json::json!({ "requestId": request_id, "text": delta }));
+    })
+    .await?;
 
     let _ = app.emit("ai-done", serde_json::json!({ "requestId": request_id, "text": full_text }));
     Ok(())
@@ -324,34 +342,71 @@ async fn chat_openai(
         return Err(format!("API 错误 ({status})：{text}"));
     }
 
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    let full_text = parse_sse(&bytes, |delta| { let _ = app.emit("ai-chunk", serde_json::json!({ "requestId": request_id, "text": delta })); });
+    let full_text = stream_sse(resp, |delta| {
+        let _ = app.emit("ai-chunk", serde_json::json!({ "requestId": request_id, "text": delta }));
+    })
+    .await?;
 
     let _ = app.emit("ai-done", serde_json::json!({ "requestId": request_id, "text": full_text }));
     Ok(())
 }
 
-/// Parse SSE (Server-Sent Events) stream from bytes.
-/// Calls `on_delta` for each text chunk, returns the accumulated full text.
-fn parse_sse(bytes: &[u8], on_delta: impl Fn(&str)) -> String {
+/// Incrementally parse an SSE stream as it arrives, emitting each text delta via
+/// `on_delta` and returning the accumulated full text.
+///
+/// True streaming: unlike buffering the whole body with `bytes().await`, chunks
+/// are handled as they arrive so the frontend sees output in near-real-time.
+async fn stream_sse(
+    resp: reqwest::Response,
+    mut on_delta: impl FnMut(&str),
+) -> Result<String, String> {
     let mut full = String::new();
-    for line in bytes.split(|&b| b == b'\n') {
-        let line = String::from_utf8_lossy(line);
-        if !line.starts_with("data: ") { continue; }
-        let data = &line[6..];
-        if data == "[DONE]" { break; }
-        if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) {
-            // Claude format: delta.text
-            if let Some(text) = chunk["delta"]["text"].as_str() {
-                full.push_str(text);
-                on_delta(text);
-            }
-            // OpenAI format: choices[0].delta.content
-            if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
-                full.push_str(text);
-                on_delta(text);
+    let mut bytes = resp.bytes_stream();
+    let mut pending: Vec<u8> = Vec::new();
+    let mut done = false;
+
+    while let Some(chunk) = bytes.next().await {
+        let chunk = chunk.map_err(|e| format!("读取响应流失败：{e}"))?;
+        pending.extend_from_slice(&chunk);
+
+        // Split on newlines and handle complete lines; keep the tail for the
+        // next chunk in case a JSON object spans TCP segments.
+        let mut start = 0;
+        while let Some(rel) = pending[start..].iter().position(|&b| b == b'\n') {
+            let end = start + rel;
+            let line = &pending[start..end];
+            start = end + 1;
+            // SSE lines are "data: <json>"; some servers use "\r\n".
+            let line = if line.ends_with(b"\r") { &line[..line.len() - 1] } else { line };
+            if let Some(data) = line.strip_prefix(b"data: ") {
+                let data = std::str::from_utf8(data).unwrap_or_default();
+                if data == "[DONE]" {
+                    done = true;
+                    break;
+                }
+                if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) {
+                    // Claude format: delta.text
+                    if let Some(text) = chunk["delta"]["text"].as_str() {
+                        full.push_str(text);
+                        on_delta(text);
+                    }
+                    // OpenAI format: choices[0].delta.content
+                    if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
+                        full.push_str(text);
+                        on_delta(text);
+                    }
+                }
             }
         }
+        if done {
+            break;
+        }
+        pending.drain(..start);
+
+        if full.len() > AI_MAX_OUTPUT {
+            return Err(format!("AI 响应超过 {AI_MAX_OUTPUT} 字节上限"));
+        }
     }
-    full
+
+    Ok(full)
 }

@@ -156,7 +156,7 @@ mod tests {
             port: 22,
             username: "root".into(),
             auth: AuthMethod::Password {
-                credential_id: "momoshell/test/password".into(),
+                credential_id: "mshell/test/password".into(),
             },
             group: Some("prod".into()),
             tags: vec!["ssh".into()],

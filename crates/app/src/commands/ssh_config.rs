@@ -74,8 +74,19 @@ fn mcp_host_to_connection(h: &McpHost) -> Option<Connection> {
     let host = h.host.as_deref()?;
     let username = h.username.as_deref().unwrap_or("root");
 
-    let auth = if h.password.as_deref().filter(|p| !p.is_empty()).is_some() {
-        AuthMethod::Password { credential_id: format!("momoshell/{}/password", name) }
+    let auth = if let Some(pw) = h.password.as_deref().filter(|p| !p.is_empty()) {
+        // Persist the MCP password into the OS credential store under the same
+        // credential_id the connection will reference — otherwise the imported
+        // connection would reference a non-existent keyring entry and every
+        // connect would fail with "password not found".
+        let credential_id = format!("mshell/{name}/password");
+        match ssh_core::creds::set_secret(&credential_id, pw) {
+            Ok(()) => AuthMethod::Password { credential_id },
+            Err(e) => {
+                eprintln!("[mcp-import] 写入凭据失败（{name}）: {e}");
+                return None;
+            }
+        }
     } else if h.key.as_deref().filter(|k| !k.is_empty()).is_some() {
         AuthMethod::PrivateKey {
             path: h.key.as_deref().unwrap_or("").into(),

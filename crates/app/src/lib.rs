@@ -128,5 +128,5 @@ pub fn run() {
             commands::tunnel::tunnel_list,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running momoshell");
+        .expect("error while running mshell");
 }

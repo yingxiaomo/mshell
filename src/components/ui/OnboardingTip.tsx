@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { useConnectionsStore } from "../../stores/connections";
 import { useUiStore } from "../../stores/ui";
 
-const STORAGE_KEY = "momoshell.onboarding.dismissed.v1";
+const STORAGE_KEY = "mshell.onboarding.dismissed.v1";
 
 /**
  * One-time welcome tip when the user has no connections yet.
@@ -55,7 +55,7 @@ export function OnboardingTip() {
     <div className="pointer-events-none fixed inset-x-0 top-12 z-[40] flex justify-center px-4">
       <div className="pointer-events-auto flex max-w-lg items-start gap-3 rounded-lg border border-sky-700/40 bg-zinc-900 px-4 py-3 shadow-xl ring-1 ring-sky-500/20">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-zinc-100">欢迎使用 momoshell</p>
+          <p className="text-sm font-medium text-zinc-100">欢迎使用 mshell</p>
           <p className="mt-1 text-xs leading-relaxed text-zinc-400">
             在左侧「连接」里新建 SSH / Telnet / 本地终端。之后可用{" "}
             <kbd className="rounded border border-zinc-700 px-1 text-[10px]">

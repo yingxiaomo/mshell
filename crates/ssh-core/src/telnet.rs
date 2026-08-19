@@ -1,4 +1,4 @@
-//! Minimal Telnet client for momoshell.
+//! Minimal Telnet client for mshell.
 //!
 //! Handles raw TCP connection + basic Telnet option negotiation.
 //! No encryption, no SFTP, no tunnels — plain terminal relay.
