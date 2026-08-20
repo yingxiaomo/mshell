@@ -20,6 +20,7 @@ import {
   languageExtensionForPath,
 } from "../../lib/themes";
 import { registerEditorFind } from "../../lib/findHotkey";
+import { showToast } from "../ui/Toast";
 
 // ── Auto-save debounce ────────────────────────────────────────────────
 const AUTOSAVE_DELAY_MS = 2000;
@@ -344,12 +345,18 @@ export function FileEditor({
       if (view) {
         const content = view.state.doc.toString();
         if (content !== baselineRef.current) {
+          // Best-effort flush on unmount (session switch / tab close) so edits
+          // between keystrokes and the autosave debounce are not lost. Failure
+          // is surfaced — silently dropping the last edits on a real save
+          // failure would be data loss disguised as a clean close.
           void cmd(commands.sftpWriteText, {
             sessionId,
             remotePath,
             contentB64: b64Encode(content),
-          }).catch(() => {
-            /* best-effort flush on unmount; remote may be unreachable */
+          }).catch((e) => {
+            try {
+              showToast(`关闭前自动保存失败，内容可能未保存：${e instanceof Error ? e.message : String(e)}`, "error");
+            } catch { /* UI 可能已卸载 */ }
           });
         }
       }

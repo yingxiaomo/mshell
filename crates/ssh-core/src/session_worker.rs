@@ -1271,10 +1271,20 @@ fn poll_pending_execs(pending: &mut Vec<PendingExec>, read_buf: &mut [u8]) {
                     // a final stderr write (e.g. a trailing "command not found"
                     // diagnostic) can arrive after stdout closes, and the old
                     // code sent the result here immediately, losing that tail.
+                    // Bounded: a stderr stream that never EOFs and keeps
+                    // delivering data must not wedge this worker loop (it only
+                    // stops on EOF / error / output cap otherwise). A few reads
+                    // drain the realistic "final stderr tail"; a truly infinite
+                    // stderr writer is handled by the 60s exec timeout instead.
+                    let mut stderr_reads: u32 = 0;
                     loop {
+                        if stderr_reads >= 8 {
+                            break;
+                        }
                         match exec.channel.stderr().read(read_buf) {
                             Ok(0) => break,
                             Ok(n) => {
+                                stderr_reads += 1;
                                 exec.output.extend_from_slice(&read_buf[..n]);
                                 if exec.output.len() > EXEC_MAX_OUTPUT {
                                     let _ = exec.channel.close();
@@ -1663,10 +1673,11 @@ fn start_tunnel(
             let factory_c = factory.clone();
             let stop_c = Arc::clone(&stop);
             let config_c = config.clone();
+            let ev = event_tx.clone();
             let thread = thread::Builder::new()
                 .name(format!("tunnel-remote-{id}"))
                 .spawn(move || {
-                    tunnel::run_remote_forward_loop(factory_c, config_c, stop_c);
+                    tunnel::run_remote_forward_loop(factory_c, session_id, config_c, ev, stop_c);
                 })
                 .map_err(|e| CoreError::Other(format!("spawn remote tunnel thread: {e}")))?;
 

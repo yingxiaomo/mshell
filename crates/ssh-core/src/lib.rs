@@ -30,8 +30,9 @@ pub use error::CoreError;
 pub use host_key::{
     compare_fingerprints, default_known_hosts_path, default_openssh_known_hosts_path,
     fingerprint_sha256, fingerprints_equal, host_port_key, import_openssh_known_hosts,
-    load_known_hosts, parse_openssh_known_hosts, save_known_hosts, upsert_entry, verify_host_key,
-    HostKeyCompare, KnownHostEntry, KnownHostsFile, KnownHostsPolicy,
+    load_known_hosts, parse_openssh_known_hosts, remove_host_key, save_known_hosts, trust_host_key,
+    upsert_entry, verify_host_key, HostKeyCompare, KnownHostEntry, KnownHostsFile,
+    KnownHostsPolicy,
 };
 pub use jump::resolve_jump_chain;
 pub use session::{SessionCmd, SessionEvent, SessionManager};

@@ -31,19 +31,15 @@ pub fn host_key_trust(
     }
 
     let path = ssh_core::default_known_hosts_path();
-    let mut file = ssh_core::load_known_hosts(&path).map_err(map_core_err)?;
-    ssh_core::upsert_entry(
-        &mut file,
-        ssh_core::KnownHostEntry {
-            host: host.trim().to_string(),
-            fingerprint: fingerprint.trim().to_string(),
-            key_type: key_type
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "user-trusted".into()),
-        },
-    );
-    ssh_core::save_known_hosts(&path, &file).map_err(map_core_err)?;
-    Ok(())
+    ssh_core::trust_host_key(
+        &path,
+        host.trim(),
+        fingerprint.trim(),
+        &key_type
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "user-trusted".into()),
+    )
+    .map_err(map_core_err)
 }
 
 /// Import trusted host keys from an OpenSSH `known_hosts` file (default
@@ -77,14 +73,7 @@ pub fn remove_known_host(host: String) -> Result<bool, String> {
         return Err(map_err_str("host is required"));
     }
     let path = ssh_core::default_known_hosts_path();
-    let mut file = ssh_core::load_known_hosts(&path).map_err(map_core_err)?;
-    let before = file.hosts.len();
-    file.hosts.retain(|e| e.host != key);
-    let removed = file.hosts.len() != before;
-    if removed {
-        ssh_core::save_known_hosts(&path, &file).map_err(map_core_err)?;
-    }
-    Ok(removed)
+    ssh_core::remove_host_key(&path, key).map_err(map_core_err)
 }
 
 /// Result of [`generate_keypair`].

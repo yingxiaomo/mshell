@@ -160,12 +160,23 @@ export function SessionList() {
   async function onImportMcp() {
     // Try common locations first, then let user pick
     try {
-      let servers = await cmd(commands.importMcpServers);
+      const res = await cmd(commands.importMcpServers);
+      const servers = res.connections;
       if (servers.length > 0) {
         for (const s of servers) await saveConn(s);
-        showToast(`已从 MCP 配置导入 ${servers.length} 台服务器`, "success");
+        const skipped = res.skipped;
+        let msg = `已从 MCP 配置导入 ${servers.length} 台服务器`;
+        if (skipped.length > 0) {
+          msg += `；跳过 ${skipped.length} 台（${skipped.map((x) => `${x.name}: ${x.error}`).join("、")}）`;
+        }
+        showToast(msg, skipped.length > 0 ? "info" : "success");
         void reloadQuiet();
         return;
+      }
+      // All hosts skipped (or an empty config): still surface why, then fall
+      // through to the manual file picker.
+      if (res.skipped.length > 0) {
+        showToast(`MCP 配置 ${res.skipped.length} 台主机全部未能导入（${res.skipped[0]!.name}: ${res.skipped[0]!.error} 等）`, "error");
       }
     } catch { /* fall through to file picker */ }
 

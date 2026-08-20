@@ -160,5 +160,5 @@ export const commands = {
   // SSH 配置编辑
   readSshConfigText:      make<string, { path?: string | null }>("read_ssh_config_text"),
   writeSshConfigText:     make<void, { path?: string | null; content: string }>("write_ssh_config_text"),
-  importMcpServers:       make<Connection[], {}>("import_mcp_servers", asArray("MCP 服务器")),
+  importMcpServers:       make<{ connections: Connection[]; skipped: { name: string; error: string }[] }>("import_mcp_servers"),
 } as const;

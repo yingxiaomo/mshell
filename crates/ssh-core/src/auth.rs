@@ -83,6 +83,13 @@ pub fn authenticate(sess: &Session, conn: &Connection) -> Result<(), CoreError> 
 /// The password is held in a `Zeroizing` buffer so it is scrubbed from memory
 /// when the prompter is dropped (L4: the previous plain `String` clone stayed
 /// in heap slack after auth completed).
+///
+/// Known limitation: the `KeyboardInteractivePrompt` trait requires returning
+/// `Vec<String>`, so each prompt answer is an **un-wiped `String` copy**
+/// handed to libssh2 across the FFI boundary; only the internal buffer above is
+/// zeroized on drop. The copies live in heap slack until freed by the
+/// allocator — acceptable as a C-boundary cost (each round-trip is short-lived),
+/// but the zeroize guarantee intentionally does not extend to them.
 struct PasswordPrompt {
     password: Zeroizing<String>,
 }

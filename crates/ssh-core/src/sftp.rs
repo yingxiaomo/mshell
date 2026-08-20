@@ -257,8 +257,18 @@ fn safe_entry_name(name: &str) -> Result<(), CoreError> {
             "拒绝下载目录条目（含路径分隔符）：{name:?}"
         )));
     }
+    // Windows normalizes trailing dots/spaces away when creating a file, so
+    // `"con "`, `"con."` or `"foo. "` collapse onto device names (or a shorter
+    // name) and can then collide with or shadow real files. Trim them before
+    // checking reserved names; a name that is only dots/spaces is also unsafe.
+    let trimmed = name.trim_end_matches([' ', '.']);
+    if trimmed.is_empty() {
+        return Err(CoreError::Other(format!(
+            "拒绝下载目录条目（名称仅由空白/点组成）：{name:?}"
+        )));
+    }
     // Reject hidden Windows device names / reserved names that shadow local files.
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    let stem = trimmed.split('.').next().unwrap_or(trimmed).to_ascii_uppercase();
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
@@ -273,14 +283,23 @@ fn safe_entry_name(name: &str) -> Result<(), CoreError> {
 }
 
 /// Walk a remote directory via SFTP, collecting (remote file, local path) pairs
-/// and total size.
+/// and total size. `depth` bounds recursion so a malicious/buggy server cannot
+/// construct an unbounded directory tree and blow the stack while collecting.
+const MAX_COLLECT_DEPTH: u32 = 64;
+
 fn collect_remote(
     sftp: &Sftp,
     remote_dir: &str,
     local_base: &Path,
+    depth: u32,
     out: &mut Vec<(String, PathBuf)>,
     total: &mut u64,
 ) -> Result<(), CoreError> {
+    if depth > MAX_COLLECT_DEPTH {
+        return Err(CoreError::Other(format!(
+            "远端目录嵌套超过 {MAX_COLLECT_DEPTH} 层，已中止：{remote_dir}"
+        )));
+    }
     for (entry_path, stat) in sftp.readdir(Path::new(remote_dir))? {
         let full = remote_path_to_string(&entry_path);
         let name = entry_name(&full);
@@ -291,7 +310,7 @@ fn collect_remote(
         safe_entry_name(&name)?;
         let local = local_base.join(&name);
         if stat.is_dir() {
-            collect_remote(sftp, &full, &local, out, total)?;
+            collect_remote(sftp, &full, &local, depth + 1, out, total)?;
         } else {
             *total += stat.size.unwrap_or(0);
             out.push((full, local));
@@ -385,7 +404,7 @@ where
 {
     let mut files = Vec::new();
     let mut total = 0u64;
-    collect_remote(sftp, remote_dir, local_dir, &mut files, &mut total)?;
+    collect_remote(sftp, remote_dir, local_dir, 0, &mut files, &mut total)?;
     on_progress(0, Some(total));
     std::fs::create_dir_all(local_dir)?;
 
@@ -448,4 +467,49 @@ where
     writer.flush()?;
     on_progress(bytes, total);
     Ok(TransferOutcome::Done { bytes, total })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_entry_name_accepts_plain_names() {
+        assert!(safe_entry_name("report.txt").is_ok());
+        assert!(safe_entry_name("数据-2026.md").is_ok());
+        assert!(safe_entry_name("a b c").is_ok());
+        assert!(safe_entry_name("normal dir").is_ok());
+    }
+
+    #[test]
+    fn safe_entry_name_rejects_navigation_and_separators() {
+        assert!(safe_entry_name("").is_err());
+        assert!(safe_entry_name(".").is_err());
+        assert!(safe_entry_name("..").is_err());
+        assert!(safe_entry_name("../evil").is_err());
+        assert!(safe_entry_name("a/../../evil").is_err());
+        assert!(safe_entry_name("..\\win").is_err());
+        assert!(safe_entry_name("c:evil").is_err());
+        assert!(safe_entry_name("1:2").is_err());
+    }
+
+    #[test]
+    fn safe_entry_name_rejects_windows_reserved_variants() {
+        for n in ["CON", "con", "con.txt", "con.", "con ", "NUL", "nul.txt", "nul.", "nul ", "COM1", "com1.txt", "LPT9", "lpt9."] {
+            assert!(safe_entry_name(n).is_err(), "expected reject for {n:?}");
+        }
+        // Only-dots/spaces names collapse to nothing on Windows — unsafe.
+        assert!(safe_entry_name("   ").is_err());
+        assert!(safe_entry_name("...").is_err());
+        assert!(safe_entry_name(". . .").is_err());
+    }
+
+    #[test]
+    fn safe_entry_name_keeps_legal_dotted_names() {
+        assert!(safe_entry_name("console.log").is_ok(), "console* is not a device name");
+        assert!(safe_entry_name("community.txt").is_ok());
+        assert!(safe_entry_name("com10.txt").is_ok(), "COM10 is not reserved (COM1-9 only)");
+        assert!(safe_entry_name("confer.md").is_ok());
+        assert!(safe_entry_name("note.").is_ok(), "trailing dot on a non-reserved stem is tolerated");
+    }
 }

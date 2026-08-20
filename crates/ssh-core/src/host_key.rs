@@ -108,6 +108,9 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), CoreError> {
         std::process::id()
     );
     tmp.push(unique);
+    // Clear any stale temp file left by a crashed previous write before creating
+    // the new one (the name is deterministic per-pid).
+    let _ = fs::remove_file(&tmp);
     {
         use std::io::Write;
         let mut f = fs::File::create(&tmp)?;
@@ -122,6 +125,47 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), CoreError> {
             Err(e.into())
         }
     }
+}
+
+/// Atomically trust (upsert) one host-key entry, holding the known-hosts lock
+/// for the whole load→modify→save sequence.
+///
+/// Tauri commands must use this instead of calling [`load_known_hosts`] +
+/// [`save_known_hosts`] directly: the direct path bypasses [`KNOWN_HOSTS_LOCK`]
+/// and can lose entries when racing a concurrent first-seen connect (both do a
+/// read-modify-write of the same JSON file).
+pub fn trust_host_key(
+    store_path: &Path,
+    host: &str,
+    fingerprint: &str,
+    key_type: &str,
+) -> Result<(), CoreError> {
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = load_known_hosts(store_path)?;
+    upsert_entry(
+        &mut file,
+        KnownHostEntry {
+            host: host.to_string(),
+            fingerprint: fingerprint.to_string(),
+            key_type: key_type.to_string(),
+        },
+    );
+    save_known_hosts(store_path, &file)
+}
+
+/// Atomically remove one host-key entry (matched by `host:port` key), holding
+/// the known-hosts lock for the whole load→modify→save sequence. Returns
+/// whether an entry was actually removed.
+pub fn remove_host_key(store_path: &Path, host: &str) -> Result<bool, CoreError> {
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = load_known_hosts(store_path)?;
+    let before = file.hosts.len();
+    file.hosts.retain(|e| e.host != host);
+    let removed = file.hosts.len() != before;
+    if removed {
+        save_known_hosts(store_path, &file)?;
+    }
+    Ok(removed)
 }
 
 /// Look up a stored entry by `host:port` key.
@@ -215,10 +259,11 @@ fn normalize_known_host_token(tok: &str) -> Option<String> {
 ///
 /// Hashed host lines (`|1|…`) are skipped (the host can't be recovered), as are
 /// comments, `@revoked` markers (a revoked key must NOT be re-imported as a
-/// trusted entry), and unparseable lines. `@cert-authority` markers keep their
-/// authority keys (they authorize hosts rather than pin them, and importing the
-/// CA key lets us verify signed host keys). Each comma-separated host alias
-/// yields its own entry sharing the key fingerprint.
+/// trusted entry), `@cert-authority` markers (a CA key cannot be verified by
+/// this store's exact-fingerprint matching — importing it as a plain host entry
+/// would poison the host pin with an unmatchable fingerprint), and unparseable
+/// lines. Each comma-separated host alias yields its own entry sharing the key
+/// fingerprint.
 pub fn parse_openssh_known_hosts(content: &str) -> Vec<KnownHostEntry> {
     let mut out = Vec::new();
     for raw in content.lines() {
@@ -226,20 +271,14 @@ pub fn parse_openssh_known_hosts(content: &str) -> Vec<KnownHostEntry> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        // Handle @marker lines: `@revoked` entries are a deny list — skip them.
-        // `@cert-authority` lines keep the rest of the line (the CA key).
-        let line = if let Some(rest) = line.strip_prefix('@') {
-            if rest.starts_with("revoked") || rest.starts_with("revoked ") {
-                continue;
-            }
-            if let Some(after) = rest.strip_prefix("cert-authority ") {
-                after.trim_start()
-            } else {
-                continue;
-            }
-        } else {
-            line
-        };
+        // Any @marker line is skipped: `@revoked` is a deny list, and
+        // `@cert-authority` CA keys can't be used by this store (exact
+        // fingerprint pinning only — no signature-chain verification), so
+        // importing them would poison the pinned host with a fingerprint that
+        // can never match and cause spurious HostKeyChanged rejections.
+        if line.starts_with('@') {
+            continue;
+        }
 
         let mut parts = line.split_whitespace();
         let (hosts, key_type, key_b64) = match (parts.next(), parts.next(), parts.next()) {
@@ -320,10 +359,12 @@ mod tests {
         assert!(hosts.contains(&"bastion.example.com:2222"));
         assert!(hosts.contains(&"host1:22"));
         assert!(hosts.contains(&"host2:22"));
-        assert!(hosts.contains(&"ca.example.com:22")); // @cert-authority marker stripped
-        assert!(!hosts.iter().any(|h| h.contains("hash"))); // hashed line skipped
         // @revoked is a deny list — its key must NOT be re-imported as trusted.
         assert!(!hosts.iter().any(|h| h.starts_with("rev")));
+        // @cert-authority is a CA key: this store pins exact fingerprints only
+        // (no CA-chain verification), so importing it would poison the host pin
+        // and cause spurious HostKeyChanged — it must be skipped, not imported.
+        assert!(!hosts.iter().any(|h| h.starts_with("ca.")));
         assert!(entries[0].fingerprint.starts_with("SHA256:"));
         assert_eq!(entries[0].fingerprint, fingerprint_sha256(b"ABC"));
     }

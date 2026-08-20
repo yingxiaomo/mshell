@@ -261,10 +261,14 @@ export const TerminalView = memo(function TerminalView({
             const m = typeof localStorage !== "undefined" ? localStorage.getItem("mshell.ai-model") || "claude-sonnet-5-20250709" : "claude-sonnet-5-20250709";
             const ctx = replayTerminalHistory(sessionId).slice(-8).map((c) => new TextDecoder().decode(c)).join("");
             // 并发安全的请求级超时：仅清理自己，不影响其他在途 /ai。
+            // 回调只写 termRef.current（组件可能已卸载，绝不能引用闭包里的
+            // 已 dispose 终端），且对已销毁终端的写入静默容错。
             const timeoutId = setTimeout(() => {
               if (!activeAiRequests.has(requestId)) return;
               activeAiRequests.delete(requestId);
-              term.write("\r\n\x1b[31m⚠ AI 请求超时（120s 无响应）\x1b[0m\r\n");
+              try {
+                termRef.current?.write("\r\n\x1b[31m⚠ AI 请求超时（120s 无响应）\x1b[0m\r\n");
+              } catch { /* 终端已销毁 */ }
             }, AI_TIMEOUT_MS);
             try {
               await cmd(commands.aiChat, {
@@ -307,7 +311,8 @@ export const TerminalView = memo(function TerminalView({
       if (sel) void navigator.clipboard.writeText(sel).catch((e) => console.warn(e));
     });
 
-    const onKey = term.attachCustomKeyEventHandler((e) => {
+    // Handler 的释放由 term.dispose() 覆盖；返回值无需保存。
+    term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.shiftKey && (e.key === "C" || e.key === "c")) {
@@ -387,7 +392,6 @@ export const TerminalView = memo(function TerminalView({
       resizeUnsub.dispose();
       el.removeEventListener("contextmenu", onContextMenu);
       el.removeEventListener("auxclick", onAuxClick);
-      void onKey;
       term.dispose();
       termRef.current = null; fitRef.current = null; searchAddonRef.current = null;
     };

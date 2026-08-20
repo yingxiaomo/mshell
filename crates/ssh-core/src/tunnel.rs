@@ -21,6 +21,7 @@ use ssh2::{Channel, Session};
 use uuid::Uuid;
 
 use crate::error::CoreError;
+use crate::session::SessionEvent;
 
 /// Snapshot used by the session worker for list / events.
 #[derive(Debug, Clone)]
@@ -465,9 +466,15 @@ pub fn handle_remote_inbound(
 /// session), eliminating the previous cross-thread data race. One inbound
 /// connection is serviced at a time — acceptable for remote forwards and far
 /// better than racing the session.
+///
+/// Failures to establish the dedicated session or to start `channel_forward_listen`
+/// are pushed as a `TunnelStatus(Error)` event (in addition to stderr logging) so
+/// the UI does not keep showing the tunnel as `Running` when it never came up.
 pub(crate) fn run_remote_forward_loop(
     factory: crate::session_worker::SessionFactory,
+    session_id: Uuid,
     config: TunnelConfig,
+    event_tx: flume::Sender<SessionEvent>,
     stop: Arc<AtomicBool>,
 ) {
     let (remote_host, remote_port, local_host, local_port) = match &config.kind {
@@ -488,10 +495,23 @@ pub(crate) fn run_remote_forward_loop(
         }
     };
 
+    let report_error = |msg: String| {
+        let _ = event_tx.send(SessionEvent::TunnelStatus(TunnelStatus {
+            tunnel_id: config.id,
+            session_id,
+            name: config.name.clone(),
+            kind: config.kind.clone(),
+            auto_start: config.auto_start,
+            state: "error".into(),
+            error: Some(msg),
+        }));
+    };
+
     let (sess, _hold) = match factory.establish() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[tunnel-remote] establish failed: {e}");
+            report_error(format!("远端转发建立连接失败：{e}"));
             return;
         }
     };
@@ -505,6 +525,7 @@ pub(crate) fn run_remote_forward_loop(
         Ok(v) => v,
         Err(e) => {
             eprintln!("[tunnel-remote] forward listen failed: {e}");
+            report_error(format!("远端转发监听失败：{e}"));
             return;
         }
     };

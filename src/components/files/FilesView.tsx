@@ -30,6 +30,15 @@ function basename(path: string): string {
   return pathBasename(path);
 }
 
+/** Validate a server-provided name for safe use as a local file name when
+ * downloading: no separators / drive letters / "." / ".." — a malicious
+ * server must not dictate where the file lands on this machine. */
+function localSafeName(name: string): string | null {
+  if (!name || name === "." || name === "..") return null;
+  if (name.includes("/") || name.includes("\\") || name.includes(":")) return null;
+  return name;
+}
+
 export function FilesView() {
   const tabs = useSessionsStore((s) => s.tabs);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
@@ -109,6 +118,7 @@ export function FilesView() {
       listGenRef.current += 1;
       setEntries([]);
       setCwd("");
+      setLoading(false); // 同步 loading，避免仅 connecting 翻转时残留"加载中…"
       return;
     }
     void refresh(active.sessionId, cwd || ".");
@@ -118,7 +128,7 @@ export function FilesView() {
       listGenRef.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.sessionId, active?.disconnected]);
+  }, [active?.sessionId, active?.disconnected, active?.connecting]);
 
   const enqueueUploads = useCallback(
     async (sessionId: string, remoteDir: string, localPaths: string[]) => {
@@ -301,7 +311,12 @@ ${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` :
     const dir = await open({ directory: true });
     if (!dir) return;
     for (const entry of selected) {
-      const localPath = dir + "/" + entry.name;
+      const safe = localSafeName(entry.name);
+      if (!safe) {
+        showToast(`跳过下载：文件名不安全（${entry.name}）`, "error");
+        continue;
+      }
+      const localPath = dir + "/" + safe;
       try {
         const transferId = await cmd(commands.sftpDownload, { sessionId: active.sessionId, remotePath: entry.path, localPath });
         beginTransfer({
@@ -432,7 +447,12 @@ ${names.slice(0, 5).join(', ')}${names.length > 5 ? `…等${names.length}项` :
             // Download a folder recursively: pick a local parent directory.
             const parent = await open({ directory: true, title: "下载文件夹到…" });
             if (!parent) return;
-            const localPath = parent + "/" + target.name;
+            const safe = localSafeName(target.name);
+            if (!safe) {
+              showToast(`跳过下载：文件名不安全（${target.name}）`, "error");
+              return;
+            }
+            const localPath = parent + "/" + safe;
             const transferId = await cmd(commands.sftpDownload, { sessionId, remotePath: target.path, localPath });
             beginTransfer({
               transferId,

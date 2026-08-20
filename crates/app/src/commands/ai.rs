@@ -9,9 +9,10 @@ const KEY_ID: &str = "mshell/nil/ai_key";
 const ENDPOINT_ID: &str = "mshell/nil/ai_endpoint";
 
 /// Total wall-clock budget for a single AI chat round-trip (connect + stream).
-/// The frontend applies its own per-request timeout, so this only guards the
-/// backend from hanging forever on a dead endpoint.
-const AI_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Kept aligned with the frontend's per-request timeout (120s) so a dead
+/// endpoint doesn't keep burning the connection/stream after the UI has given
+/// up on it.
+const AI_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// Upper bound on accumulated AI response text (tokens). Guard against a
 /// runaway or malicious endpoint streaming forever.
 const AI_MAX_OUTPUT: usize = 16 * 1024 * 1024;
@@ -405,6 +406,29 @@ async fn stream_sse(
 
         if full.len() > AI_MAX_OUTPUT {
             return Err(format!("AI 响应超过 {AI_MAX_OUTPUT} 字节上限"));
+        }
+    }
+
+    // Stream ended: parse any remaining tail that never saw a trailing newline
+    // (some servers omit the final "\n"), so the last delta isn't lost.
+    if !done && !pending.is_empty() {
+        let line = pending.as_slice();
+        let line = if line.ends_with(b"\r") { &line[..line.len() - 1] } else { line };
+        if let Some(data) = line.strip_prefix(b"data: ") {
+            let data = std::str::from_utf8(data).unwrap_or_default();
+            // "[DONE]" on the tail line means a clean end; nothing left to emit.
+            if data != "[DONE]" {
+                if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) {
+                    if let Some(text) = chunk["delta"]["text"].as_str() {
+                        full.push_str(text);
+                        on_delta(text);
+                    }
+                    if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
+                        full.push_str(text);
+                        on_delta(text);
+                    }
+                }
+            }
         }
     }
 
